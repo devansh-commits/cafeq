@@ -1,0 +1,466 @@
+'use client'
+import { useState, useEffect, useRef } from 'react'
+import { supabase } from '@/lib/supabase'
+import { ShoppingCart, Clock, Zap, X, MessageCircle, Send, ChevronDown, ChevronUp, Plus, Minus, Sparkles } from 'lucide-react'
+
+type CustomizationOption = { name: string; choices: string[] }
+type MenuItem = {
+  id: string; name: string; description: string; price: number
+  category: string; prep_time_minutes: number; is_available: boolean
+  customizations?: { options: CustomizationOption[] }
+}
+type CartItem = MenuItem & { quantity: number; selectedCustomizations: Record<string, string> }
+type TimeSlot = { id: string; slot_time: string; max_orders: number; current_orders: number }
+type AIItem = { name: string; price: number }
+type ChatMessage = { role: 'user' | 'assistant'; content: string; items?: AIItem[] }
+
+export default function Home() {
+  const [menuItems, setMenuItems] = useState<MenuItem[]>([])
+  const [cart, setCart] = useState<CartItem[]>([])
+  const [activeCategory, setActiveCategory] = useState('All')
+  const [loading, setLoading] = useState(true)
+  const [showCart, setShowCart] = useState(false)
+  const [showAI, setShowAI] = useState(false)
+  const [customizingItem, setCustomizingItem] = useState<MenuItem | null>(null)
+  const [selectedCustomizations, setSelectedCustomizations] = useState<Record<string, string>>({})
+  const [slots, setSlots] = useState<TimeSlot[]>([])
+  const [showSlots, setShowSlots] = useState(false)
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
+    { role: 'assistant', content: "Hi! I'm your CafeQ assistant! Ask me anything like 'What's under Rs.80?' or 'Which slots are free?' or 'What's quick to make?'" }
+  ])
+  const [chatInput, setChatInput] = useState('')
+  const [aiLoading, setAiLoading] = useState(false)
+  const chatEndRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => { fetchMenu(); fetchSlots() }, [])
+  useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [chatMessages])
+
+  async function fetchMenu() {
+    const { data } = await supabase.from('menu_items').select('*').eq('is_available', true)
+    if (data) setMenuItems(data)
+    setLoading(false)
+  }
+
+  async function fetchSlots() {
+    const today = new Date().toISOString().split('T')[0]
+    const { data: existing } = await supabase.from('time_slots').select('id').eq('date', today).limit(1)
+    if (!existing || existing.length === 0) {
+      await supabase.rpc('generate_daily_slots', { target_date: today })
+    }
+    const { data } = await supabase.from('time_slots').select('*').eq('date', today).order('slot_time')
+    if (data) setSlots(data)
+  }
+
+  function getSlotStatus(slot: TimeSlot) {
+    const pct = slot.current_orders / slot.max_orders
+    const isRush = slot.max_orders === 15
+    const typeLabel = isRush ? '🔥 Rush' : '✅ Normal'
+    if (pct < 0.6) return { label: typeLabel, color: 'bg-green-100 text-green-700 border-green-200' }
+    if (pct < 0.9) return { label: '⚡ Filling up', color: 'bg-yellow-100 text-yellow-700 border-yellow-200' }
+    return { label: '🔴 Full*', color: 'bg-red-100 text-red-700 border-red-200' }
+  }
+
+  function openCustomization(item: MenuItem) {
+    if (item.customizations?.options?.length) {
+      const defaults: Record<string, string> = {}
+      item.customizations.options.forEach(opt => { defaults[opt.name] = opt.choices[1] || opt.choices[0] })
+      setSelectedCustomizations(defaults)
+      setCustomizingItem(item)
+    } else { addToCart(item, {}) }
+  }
+
+  function addToCart(item: MenuItem, customizations: Record<string, string>) {
+    const key = item.id + JSON.stringify(customizations)
+    setCart(prev => {
+      const exists = prev.find(i => i.id + JSON.stringify(i.selectedCustomizations) === key)
+      if (exists) return prev.map(i => i.id + JSON.stringify(i.selectedCustomizations) === key ? { ...i, quantity: i.quantity + 1 } : i)
+      return [...prev, { ...item, quantity: 1, selectedCustomizations: customizations }]
+    })
+    setCustomizingItem(null)
+  }
+
+  function removeFromCartSimple(itemId: string) {
+    setCart(prev => {
+      const exists = prev.find(i => i.id === itemId)
+      if (!exists) return prev
+      if (exists.quantity > 1) return prev.map(i => i.id === itemId ? { ...i, quantity: i.quantity - 1 } : i)
+      return prev.filter(i => i.id !== itemId)
+    })
+  }
+
+  function addToCartByName(aiItem: AIItem) {
+    const found = menuItems.find(m => m.name.toLowerCase() === aiItem.name.toLowerCase())
+    if (found) addToCart(found, {})
+  }
+
+  function removeFromCartByName(name: string) {
+    const found = menuItems.find(m => m.name.toLowerCase() === name.toLowerCase())
+    if (!found) return
+    removeFromCartSimple(found.id)
+  }
+
+  function getCartQtyByName(name: string) {
+    const found = menuItems.find(m => m.name.toLowerCase() === name.toLowerCase())
+    if (!found) return 0
+    return cart.filter(i => i.id === found.id).reduce((sum, i) => sum + i.quantity, 0)
+  }
+
+  function removeFromCart(key: string) {
+    setCart(prev => {
+      const exists = prev.find(i => i.id + JSON.stringify(i.selectedCustomizations) === key)
+      if (exists && exists.quantity > 1) return prev.map(i => i.id + JSON.stringify(i.selectedCustomizations) === key ? { ...i, quantity: i.quantity - 1 } : i)
+      return prev.filter(i => i.id + JSON.stringify(i.selectedCustomizations) !== key)
+    })
+  }
+
+  function goToCheckout() {
+    localStorage.setItem('cafeq_cart', JSON.stringify(cart))
+    window.location.href = '/checkout'
+  }
+
+  async function sendToAI() {
+    if (!chatInput.trim()) return
+    const userMsg = chatInput.trim()
+    setChatInput('')
+    setChatMessages(prev => [...prev, { role: 'user', content: userMsg }])
+    setAiLoading(true)
+    const menuContext = menuItems.map(i => `${i.name} - Rs.${i.price} - ${i.prep_time_minutes} min - ${i.category}`).join('\n')
+    const slotContext = slots.map(s => `${s.slot_time}: ${s.current_orders}/${s.max_orders} orders (${s.max_orders === 15 ? 'Rush' : 'Normal'})`).join('\n')
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: [...chatMessages.map(m => ({ role: m.role, content: m.content })), { role: 'user', content: userMsg }],
+          menuContext, slotContext
+        })
+      })
+      const data = await res.json()
+      const reply = data.choices?.[0]?.message?.content || 'Sorry, try again!'
+      const items = data.items || []
+      setChatMessages(prev => [...prev, { role: 'assistant', content: reply, items }])
+    } catch (err) {
+      console.error('AI Error:', err)
+      setChatMessages(prev => [...prev, { role: 'assistant', content: 'Sorry, try again!' }])
+    }
+    setAiLoading(false)
+  }
+
+  const categories = ['All', ...Array.from(new Set(menuItems.map(i => i.category)))]
+  const filtered = activeCategory === 'All' ? menuItems : menuItems.filter(i => i.category === activeCategory)
+  const totalItems = cart.reduce((sum, i) => sum + i.quantity, 0)
+  const totalPrice = cart.reduce((sum, i) => sum + i.price * i.quantity, 0)
+  const convenienceFee = totalPrice < 100 ? 2 : totalPrice < 200 ? 4 : totalPrice < 350 ? 6 : 10
+  const grandTotal = totalPrice + convenienceFee
+
+  if (loading) return (
+    <div className="min-h-screen bg-orange-50 flex items-center justify-center">
+      <div className="text-center">
+        <div className="text-5xl mb-4">☕</div>
+        <p className="text-orange-600 font-bold text-xl">Loading CaféQ...</p>
+      </div>
+    </div>
+  )
+
+  return (
+    <div className="min-h-screen pb-24" style={{ background: '#f8f7f4' }}>
+      <style>{`
+        @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+        @keyframes popIn{0%{transform:scale(0.85);opacity:0}70%{transform:scale(1.03)}100%{transform:scale(1);opacity:1}}
+        @keyframes breathe{0%,100%{box-shadow:0 0 0 0 rgba(249,115,22,0.4)}50%{box-shadow:0 0 0 10px rgba(249,115,22,0)}}
+        @keyframes dot{0%,80%,100%{transform:scale(0.6);opacity:0.4}40%{transform:scale(1);opacity:1}}
+        .btn-scale{transition:transform 0.15s ease;} .btn-scale:active{transform:scale(0.92);}
+        .menu-card{transition:box-shadow 0.2s ease,transform 0.2s ease;}
+        .menu-card:hover{transform:translateY(-1px);box-shadow:0 6px 20px rgba(0,0,0,0.07);}
+        .chat-input{color:#1a1a1a !important;} .chat-input::placeholder{color:#aaa !important;}
+      `}</style>
+
+      {/* HEADER */}
+      <div className="sticky top-0 z-40" style={{ background: '#f97316', boxShadow: '0 2px 12px rgba(249,115,22,0.3)' }}>
+        <div className="max-w-2xl mx-auto px-4 py-3 flex justify-between items-center">
+          <div className="flex items-center gap-3">
+            <span style={{ fontSize: '1.8rem' }}>☕</span>
+            <div>
+              <h1 style={{ fontSize: '1.9rem', fontWeight: 800, color: 'white', letterSpacing: '-0.02em', lineHeight: 1 }}>CaféQ</h1>
+              <p style={{ color: 'rgba(255,255,255,0.8)', fontSize: '0.7rem', fontWeight: 500 }}>Skip the queue · Order smart</p>
+            </div>
+          </div>
+          <button onClick={() => setShowCart(!showCart)}
+            className="relative flex items-center gap-2 btn-scale"
+            style={{ background: 'white', color: '#f97316', borderRadius: '50px', padding: '8px 16px', fontWeight: 700, fontSize: '0.9rem' }}>
+            <ShoppingCart size={17} />
+            Cart
+            {totalItems > 0 && (
+              <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center font-bold">
+                {totalItems}
+              </span>
+            )}
+          </button>
+        </div>
+      </div>
+
+      <div className="max-w-2xl mx-auto px-4 py-4">
+
+        {/* CART PANEL */}
+        {showCart && (
+          <div className="bg-white rounded-2xl shadow-lg p-4 mb-4" style={{ border: '1px solid #fed7aa', animation: 'fadeUp 0.25s ease forwards' }}>
+            <h2 className="font-bold text-lg mb-3" style={{ color: '#1a1a1a' }}>🛒 Your Order</h2>
+            {cart.length === 0 ? (
+              <p className="text-center py-6 text-gray-400">Your cart is empty</p>
+            ) : (
+              <>
+                {cart.map(item => {
+                  const key = item.id + JSON.stringify(item.selectedCustomizations)
+                  return (
+                    <div key={key} className="py-2 border-b border-gray-100 flex justify-between items-center">
+                      <div>
+                        <p className="font-medium text-gray-800">{item.name}</p>
+                        {Object.values(item.selectedCustomizations).length > 0 && (
+                          <p className="text-xs text-orange-500">{Object.values(item.selectedCustomizations).join(' · ')}</p>
+                        )}
+                        <p className="text-sm text-gray-400">Rs.{item.price} each</p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button onClick={() => removeFromCart(key)} className="btn-scale w-8 h-8 rounded-full flex items-center justify-center" style={{ background: '#fff3ed', color: '#f97316' }}><Minus size={13} /></button>
+                        <span className="font-bold text-gray-800 w-5 text-center">{item.quantity}</span>
+                        <button onClick={() => addToCart(item, item.selectedCustomizations)} className="btn-scale w-8 h-8 rounded-full flex items-center justify-center" style={{ background: '#f97316', color: 'white' }}><Plus size={13} /></button>
+                      </div>
+                    </div>
+                  )
+                })}
+                <div className="mt-3 space-y-1">
+                  <div className="flex justify-between text-gray-600"><span>Subtotal</span><span>Rs.{totalPrice}</span></div>
+                  <div className="flex justify-between text-gray-400 text-sm"><span>Convenience fee</span><span>Rs.{convenienceFee}</span></div>
+                  <div className="flex justify-between font-bold text-lg border-t pt-2 mt-2" style={{ color: '#1a1a1a' }}>
+                    <span>Total</span><span style={{ color: '#f97316' }}>Rs.{grandTotal}</span>
+                  </div>
+                </div>
+                <button onClick={goToCheckout} className="btn-scale w-full text-white font-bold text-lg mt-4 py-3 rounded-xl" style={{ background: '#f97316', border: 'none', cursor: 'pointer' }}>
+                  Proceed to Pay Rs.{grandTotal} →
+                </button>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* LIVE SLOTS */}
+        <div className="bg-white rounded-2xl p-4 mb-4" style={{ border: '1px solid #f0ede8' }}>
+          <button onClick={() => setShowSlots(!showSlots)} className="w-full flex justify-between items-center">
+            <div className="flex items-center gap-2">
+              <Clock size={17} style={{ color: '#f97316' }} />
+              <span className="font-semibold text-gray-800">Live Pickup Slots</span>
+              <span style={{ background: '#e8f5e9', color: '#2e7d32', fontSize: '0.7rem', padding: '2px 8px', borderRadius: '50px', fontWeight: 600 }}>Tap to view</span>
+            </div>
+            {showSlots ? <ChevronUp size={16} className="text-gray-400" /> : <ChevronDown size={16} className="text-gray-400" />}
+          </button>
+          {showSlots && (
+            <div className="mt-3">
+              <p style={{ fontSize: '0.72rem', color: '#9ca3af', marginBottom: '8px' }}>
+                🔥 Rush slots = 15 min · ✅ Normal slots = 30 min · Open 10 AM – 7 PM
+              </p>
+              <div className="grid grid-cols-2 gap-2" style={{ maxHeight: '260px', overflowY: 'auto' }}>
+                {slots.length === 0 ? (
+                  <p className="text-gray-400 text-sm col-span-2 text-center py-2">Loading slots...</p>
+                ) : slots.map(slot => {
+                  const s = getSlotStatus(slot)
+                  return (
+                    <div key={slot.id} className={`border rounded-xl p-2 text-center ${s.color}`}>
+                      <p className="font-bold text-sm">{slot.slot_time}</p>
+                      <p className="text-xs">{slot.current_orders}/{slot.max_orders} orders</p>
+                      <p className="text-xs font-semibold">{s.label}</p>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* CATEGORIES */}
+        <div className="flex gap-2 overflow-x-auto pb-2 mb-4" style={{ scrollbarWidth: 'none' }}>
+          {categories.map(cat => (
+            <button key={cat} onClick={() => setActiveCategory(cat)} className="btn-scale whitespace-nowrap"
+              style={{
+                padding: '7px 16px', borderRadius: '50px', fontSize: '0.85rem', fontWeight: 600,
+                background: activeCategory === cat ? '#f97316' : 'white',
+                color: activeCategory === cat ? 'white' : '#6b7280',
+                border: activeCategory === cat ? 'none' : '1.5px solid #e5e7eb',
+                boxShadow: activeCategory === cat ? '0 3px 10px rgba(249,115,22,0.3)' : '0 1px 3px rgba(0,0,0,0.04)'
+              }}>
+              {cat}
+            </button>
+          ))}
+        </div>
+
+        {/* MENU ITEMS */}
+        <div className="grid grid-cols-1 gap-3">
+          {filtered.map(item => {
+            const inCart = cart.filter(i => i.id === item.id).reduce((sum, i) => sum + i.quantity, 0)
+            return (
+              <div key={item.id} className="menu-card bg-white rounded-2xl p-4 flex justify-between items-center" style={{ border: '1px solid #f0ede8' }}>
+                <div className="flex-1 pr-3">
+                  <div className="flex items-center gap-2 mb-1 flex-wrap">
+                    <h3 className="font-semibold text-gray-900">{item.name}</h3>
+                    {item.prep_time_minutes <= 3 && (
+                      <span style={{ background: '#e8f5e9', color: '#2e7d32', fontSize: '0.68rem', padding: '2px 7px', borderRadius: '50px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '2px' }}>
+                        <Zap size={9} /> Quick
+                      </span>
+                    )}
+                    {item.customizations?.options?.length ? (
+                      <span style={{ background: '#eff6ff', color: '#1d4ed8', fontSize: '0.68rem', padding: '2px 7px', borderRadius: '50px', fontWeight: 600 }}>Customisable</span>
+                    ) : null}
+                  </div>
+                  <p className="text-gray-400 text-sm mb-2">{item.description}</p>
+                  <div className="flex items-center gap-3">
+                    <span className="font-bold" style={{ color: '#f97316', fontSize: '1.1rem' }}>Rs.{item.price}</span>
+                    <span className="text-gray-300 text-xs flex items-center gap-1"><Clock size={11} />{item.prep_time_minutes} min</span>
+                  </div>
+                </div>
+                <div className="flex-shrink-0">
+                  {inCart > 0 ? (
+                    <div className="flex items-center gap-2 rounded-2xl px-2 py-1" style={{ border: '1.5px solid #fed7aa', background: '#fff7ed' }}>
+                      <button className="btn-scale w-8 h-8 rounded-full flex items-center justify-center" style={{ background: '#fff3ed', color: '#f97316' }} onClick={() => removeFromCartSimple(item.id)}>
+                        <Minus size={14} />
+                      </button>
+                      <span className="font-bold text-gray-800 w-5 text-center">{inCart}</span>
+                      <button className="btn-scale w-8 h-8 rounded-full flex items-center justify-center" style={{ background: '#f97316', color: 'white' }} onClick={() => openCustomization(item)}>
+                        <Plus size={14} />
+                      </button>
+                    </div>
+                  ) : (
+                    <button onClick={() => openCustomization(item)} className="btn-scale text-white font-semibold px-4 py-2 rounded-xl text-sm" style={{ background: '#f97316', boxShadow: '0 2px 8px rgba(249,115,22,0.3)' }}>
+                      Add
+                    </button>
+                  )}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* CUSTOMIZATION MODAL */}
+      {customizingItem && (
+        <div className="fixed inset-0 z-50 flex items-end" style={{ background: 'rgba(0,0,0,0.45)', backdropFilter: 'blur(3px)' }}>
+          <div className="bg-white w-full max-w-2xl mx-auto rounded-t-3xl p-6" style={{ animation: 'fadeUp 0.25s ease forwards' }}>
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="font-bold text-xl text-gray-900">{customizingItem.name}</h2>
+              <button onClick={() => setCustomizingItem(null)} className="btn-scale w-9 h-9 rounded-full flex items-center justify-center" style={{ background: '#f5f5f5' }}>
+                <X size={18} className="text-gray-500" />
+              </button>
+            </div>
+            <p className="font-bold text-xl mb-5" style={{ color: '#f97316' }}>Rs.{customizingItem.price}</p>
+            {customizingItem.customizations?.options.map(opt => (
+              <div key={opt.name} className="mb-5">
+                <p className="font-semibold text-gray-700 mb-2">{opt.name}</p>
+                <div className="flex gap-2 flex-wrap">
+                  {opt.choices.map(choice => (
+                    <button key={choice} onClick={() => setSelectedCustomizations(prev => ({ ...prev, [opt.name]: choice }))}
+                      className="btn-scale px-4 py-2 rounded-xl text-sm font-medium"
+                      style={{
+                        background: selectedCustomizations[opt.name] === choice ? '#f97316' : '#f8f7f4',
+                        color: selectedCustomizations[opt.name] === choice ? 'white' : '#374151',
+                        border: selectedCustomizations[opt.name] === choice ? 'none' : '1.5px solid #e5e7eb'
+                      }}>
+                      {choice}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+            <button onClick={() => addToCart(customizingItem, selectedCustomizations)}
+              className="btn-scale w-full text-white font-bold text-lg py-4 rounded-2xl"
+              style={{ background: '#f97316', boxShadow: '0 4px 14px rgba(249,115,22,0.35)' }}>
+              Add to Cart — Rs.{customizingItem.price}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* AI BUTTON */}
+      <button onClick={() => setShowAI(!showAI)}
+        className="fixed bottom-6 right-5 text-white w-14 h-14 rounded-full flex items-center justify-center z-40"
+        style={{ background: '#f97316', boxShadow: '0 4px 18px rgba(249,115,22,0.5)', animation: 'breathe 2.5s ease-in-out infinite' }}>
+        <Sparkles size={24} />
+      </button>
+
+      {/* AI CHAT */}
+      {showAI && (
+        <div className="fixed bottom-24 right-4 bg-white rounded-3xl shadow-2xl z-50 flex flex-col"
+          style={{ width: '360px', height: '560px', border: '1px solid #f0ede8', animation: 'popIn 0.3s cubic-bezier(0.34,1.56,0.64,1) forwards' }}>
+          <div className="p-4 rounded-t-3xl flex justify-between items-center flex-shrink-0" style={{ background: '#f97316' }}>
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-full flex items-center justify-center" style={{ background: 'rgba(255,255,255,0.2)' }}>
+                <Sparkles size={18} color="white" />
+              </div>
+              <div>
+                <p className="font-bold text-white">CaféQ Assistant</p>
+                <p style={{ color: 'rgba(255,255,255,0.8)', fontSize: '0.7rem' }}>Powered by Llama 3.3 · Free AI</p>
+              </div>
+            </div>
+            <button onClick={() => setShowAI(false)} className="btn-scale w-8 h-8 rounded-full flex items-center justify-center" style={{ background: 'rgba(255,255,255,0.2)' }}>
+              <X size={16} color="white" />
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto p-4 space-y-3">
+            {chatMessages.map((msg, i) => (
+              <div key={i} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+                <div style={{
+                  maxWidth: '88%', padding: '9px 13px', fontSize: '0.875rem', lineHeight: 1.5,
+                  borderRadius: msg.role === 'user' ? '16px 16px 4px 16px' : '16px 16px 16px 4px',
+                  background: msg.role === 'user' ? '#f97316' : '#f8f7f4',
+                  color: msg.role === 'user' ? 'white' : '#1a1a1a'
+                }}>
+                  <span style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</span>
+                </div>
+                {msg.role === 'assistant' && msg.items && msg.items.length > 0 && (
+                  <div className="mt-2 w-full space-y-2">
+                    {msg.items.map((aiItem, j) => {
+                      const qty = getCartQtyByName(aiItem.name)
+                      return (
+                        <div key={j} className="flex items-center justify-between rounded-xl px-3 py-2" style={{ background: '#fff7ed', border: '1px solid #fed7aa' }}>
+                          <div>
+                            <p className="font-semibold text-sm text-gray-800">{aiItem.name}</p>
+                            <p className="text-xs font-bold" style={{ color: '#f97316' }}>Rs.{aiItem.price}</p>
+                          </div>
+                          {qty > 0 ? (
+                            <div className="flex items-center gap-2">
+                              <button onClick={() => removeFromCartByName(aiItem.name)} className="btn-scale w-7 h-7 rounded-full flex items-center justify-center" style={{ background: 'white', color: '#f97316', border: '1px solid #fed7aa' }}><Minus size={11} /></button>
+                              <span className="font-bold text-sm" style={{ color: '#f97316', minWidth: '1rem', textAlign: 'center' }}>{qty}</span>
+                              <button onClick={() => addToCartByName(aiItem)} className="btn-scale w-7 h-7 rounded-full flex items-center justify-center" style={{ background: '#f97316', color: 'white' }}><Plus size={11} /></button>
+                            </div>
+                          ) : (
+                            <button onClick={() => addToCartByName(aiItem)} className="btn-scale text-white font-bold px-3 py-1 rounded-lg text-xs" style={{ background: '#f97316' }}>Add</button>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            ))}
+            {aiLoading && (
+              <div className="flex items-start">
+                <div style={{ padding: '10px 14px', borderRadius: '16px 16px 16px 4px', background: '#f8f7f4', display: 'flex', gap: '5px', alignItems: 'center' }}>
+                  {[0, 1, 2].map(i => (
+                    <div key={i} style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#f97316', animation: `dot 1.2s ease-in-out ${i * 0.2}s infinite` }} />
+                  ))}
+                </div>
+              </div>
+            )}
+            <div ref={chatEndRef} />
+          </div>
+          <div className="p-3 flex gap-2 flex-shrink-0" style={{ borderTop: '1px solid #f0ede8' }}>
+            <input value={chatInput} onChange={e => setChatInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && sendToAI()}
+              placeholder="Ask about menu or slots..."
+              className="chat-input flex-1 rounded-xl px-4 py-3 text-sm"
+              style={{ border: '1.5px solid #e5e7eb', color: '#1a1a1a', background: '#fafafa', outline: 'none' }} />
+            <button onClick={sendToAI} className="btn-scale flex items-center justify-center rounded-xl flex-shrink-0" style={{ width: '44px', height: '44px', background: '#f97316' }}>
+              <Send size={17} color="white" />
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
