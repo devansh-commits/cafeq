@@ -5,7 +5,7 @@ import {
   LayoutDashboard, ShoppingBag, TrendingUp, UtensilsCrossed,
   LogOut, RefreshCw, Search, ToggleLeft, ToggleRight,
   Printer, Download, Sparkles,
-  Send, Users, Trash2, ChevronDown, ChevronUp
+  Send, Users, Trash2, ChevronDown, ChevronUp, Mic, MicOff
 } from 'lucide-react'
 
 type Order = {
@@ -19,7 +19,8 @@ type MenuItem = {
   id: string; name: string; price: number; category: string
   is_available: boolean; prep_time_minutes: number; description: string
 }
-type ChatMsg = { role: 'user' | 'assistant'; content: string }
+type DownloadAction = { label: string; filename: string; type: 'today' | 'week' | 'month' | 'all' }
+type ChatMsg = { role: 'user' | 'assistant'; content: string; download?: DownloadAction }
 
 const TABS = [
   { id: 'overview', label: 'Home', icon: LayoutDashboard },
@@ -47,7 +48,6 @@ function statusLabel(s: string) {
   return s
 }
 
-/** Supabase sometimes returns embedded FK rows as a single object or as a one-element array. */
 function normalizeOrders(raw: unknown[] | null): Order[] {
   if (!raw?.length) return []
   return raw.map((rowUnknown) => {
@@ -79,6 +79,24 @@ function playAlert() {
   } catch {}
 }
 
+// Detect if AI reply mentions downloadable data
+function detectDownload(reply: string): DownloadAction | undefined {
+  const lower = reply.toLowerCase()
+  if (lower.includes('today') && (lower.includes('report') || lower.includes('download') || lower.includes('csv') || lower.includes('export'))) {
+    return { label: 'Download Today\'s Report', filename: `cafeq-today-${new Date().toISOString().split('T')[0]}.csv`, type: 'today' }
+  }
+  if (lower.includes('week') && (lower.includes('report') || lower.includes('download') || lower.includes('csv') || lower.includes('export'))) {
+    return { label: 'Download Weekly Report', filename: 'cafeq-week.csv', type: 'week' }
+  }
+  if (lower.includes('month') && (lower.includes('report') || lower.includes('download') || lower.includes('csv') || lower.includes('export'))) {
+    return { label: 'Download Monthly Report', filename: 'cafeq-month.csv', type: 'month' }
+  }
+  if (lower.includes('download') || lower.includes('export') || lower.includes('csv')) {
+    return { label: 'Download All Orders', filename: 'cafeq-all-orders.csv', type: 'all' }
+  }
+  return undefined
+}
+
 export default function AdminPage() {
   const [authed, setAuthed] = useState(false)
   const [pin, setPin] = useState('')
@@ -94,7 +112,7 @@ export default function AdminPage() {
   const [saving, setSaving] = useState<string | null>(null)
   const [revenueRange, setRevenueRange] = useState<'today' | 'week' | 'month'>('week')
   const [chatMsgs, setChatMsgs] = useState<ChatMsg[]>([
-    { role: 'assistant', content: 'Namaste! 👋 I\'m your business assistant. Ask me anything — in Hindi or English!\n\nExamples:\n• "Aaj kitna revenue hua?"\n• "Which item is most popular?"\n• "Compare this week vs last week"' }
+    { role: 'assistant', content: 'Namaste! 👋 Main aapka business assistant hoon. Kuch bhi pucho — Hindi, English, Gujarati, ya kisi bhi Indian language mein!\n\nExamples:\n• "Aaj kitna revenue hua?"\n• "Best selling item kaun sa hai?"\n• "Is hafte vs pichle hafte compare karo"\n• "Aaj ka report download karo"' }
   ])
   const [chatInput, setChatInput] = useState('')
   const [aiLoading, setAiLoading] = useState(false)
@@ -103,8 +121,68 @@ export default function AdminPage() {
   const [pinSaved, setPinSaved] = useState(false)
   const [newItem, setNewItem] = useState({ name: '', price: '', category: '', description: '', prep_time_minutes: '5' })
   const [addingItem, setAddingItem] = useState(false)
+
+  // ── Mic state ──
+  const [micOn, setMicOn] = useState(false)
+  const [micSupported, setMicSupported] = useState(false)
+  const recognitionRef = useRef<any>(null)
+
   const prevOrderCount = useRef(0)
   const chatEndRef = useRef<HTMLDivElement>(null)
+
+  // Check mic support
+  useEffect(() => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+    if (SpeechRecognition) setMicSupported(true)
+  }, [])
+
+  // Toggle mic
+  function toggleMic() {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+    if (!SpeechRecognition) return
+
+    if (micOn) {
+      // Turn OFF
+      recognitionRef.current?.stop()
+      setMicOn(false)
+      return
+    }
+
+    // Turn ON
+    const recognition = new SpeechRecognition()
+    recognition.continuous = true        // keeps listening until manually stopped
+    recognition.interimResults = true    // shows partial results while speaking
+    recognition.lang = ''               // auto-detect language
+
+    recognition.onresult = (event: any) => {
+      let transcript = ''
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        transcript += event.results[i][0].transcript
+      }
+      setChatInput(transcript)
+    }
+
+    recognition.onerror = () => {
+      setMicOn(false)
+    }
+
+    recognition.onend = () => {
+      // If still supposed to be on, restart it
+      if (micOn) recognition.start()
+    }
+
+    recognitionRef.current = recognition
+    recognition.start()
+    setMicOn(true)
+  }
+
+  // Stop mic when user sends message
+  function stopMic() {
+    if (micOn) {
+      recognitionRef.current?.stop()
+      setMicOn(false)
+    }
+  }
 
   useEffect(() => {
     if (sessionStorage.getItem('cafeq_owner') === 'true') setAuthed(true)
@@ -119,7 +197,6 @@ export default function AdminPage() {
       .limit(1000)
     if (o) {
       const normalized = normalizeOrders(o as unknown[])
-      // Alert on new orders
       const todayStr = new Date().toISOString().split('T')[0]
       const todayCount = normalized.filter(x => x.created_at?.startsWith(todayStr)).length
       if (prevOrderCount.current > 0 && todayCount > prevOrderCount.current) playAlert()
@@ -167,7 +244,6 @@ export default function AdminPage() {
   todayOrders.forEach(o => { const s = fmt(o.pickup_time); slotFreq[s] = (slotFreq[s] || 0) + 1 })
   const busiestSlot = Object.entries(slotFreq).sort((a, b) => b[1] - a[1])[0]
 
-  // Revenue chart
   const days = revenueRange === 'today' ? 1 : revenueRange === 'week' ? 7 : 30
   const revenueData = Array.from({ length: days }, (_, i) => {
     const d = new Date(); d.setDate(d.getDate() - (days - 1 - i))
@@ -181,18 +257,11 @@ export default function AdminPage() {
   })
   const maxRev = Math.max(...revenueData.map(d => d.revenue), 1)
 
-  // Peak hours heatmap (slots × days of week)
   const heatmap: Record<string, number> = {}
-  orders.forEach(o => {
-    const slot = fmt(o.pickup_time)
-    heatmap[slot] = (heatmap[slot] || 0) + 1
-  })
-  const heatSlots = Object.entries(heatmap).sort((a, b) => {
-    return a[0].localeCompare(b[0])
-  }).slice(0, 12)
+  orders.forEach(o => { const slot = fmt(o.pickup_time); heatmap[slot] = (heatmap[slot] || 0) + 1 })
+  const heatSlots = Object.entries(heatmap).sort((a, b) => a[0].localeCompare(b[0])).slice(0, 12)
   const maxHeat = Math.max(...heatSlots.map(h => h[1]), 1)
 
-  // Dead stock (items with 0 orders in last 7 days)
   const last7 = new Date(); last7.setDate(last7.getDate() - 7)
   const recentOrders = orders.filter(o => new Date(o.created_at) > last7)
   const orderedItemIds = new Set<string>()
@@ -202,7 +271,6 @@ export default function AdminPage() {
   }))
   const deadStock = menuItems.filter(m => !orderedItemIds.has(m.id))
 
-  // Filtered orders
   const filteredOrders = orders.filter(o => {
     const matchDate = orderFilter === 'today' ? o.created_at?.startsWith(todayStr)
       : orderFilter === 'active' ? ['pending', 'preparing', 'ready'].includes(o.status)
@@ -284,24 +352,38 @@ export default function AdminPage() {
     const rows = [['Token', 'Customer', 'Phone', 'Items', 'Amount', 'Fee', 'Payment', 'Slot', 'Status', 'Date']]
     data.forEach(o => rows.push([
       o.order_number, o.users?.name, o.users?.phone,
-      o.order_items?.map(i => `${i.menu_items?.name}×${i.quantity}`).join(' + '),
+      o.order_items?.map(i => `${i.menu_items?.name} x${i.quantity}`).join(' + '),
       String(o.total_amount), String(o.convenience_fee || 0),
       o.payment_method, fmt(o.pickup_time), o.status, fmtDate(o.created_at)
     ]))
     const csv = rows.map(r => r.map(c => `"${c}"`).join(',')).join('\n')
-    const blob = new Blob([csv], { type: 'text/csv' })
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a'); a.href = url; a.download = filename; a.click()
     URL.revokeObjectURL(url)
   }
 
+  function handleDownload(action: DownloadAction) {
+    if (action.type === 'today') downloadCSV(todayOrders, action.filename)
+    else if (action.type === 'week') {
+      const weekOrders = orders.filter(o => { const d = new Date(o.created_at); return (Date.now() - d.getTime()) < 7*24*60*60*1000 })
+      downloadCSV(weekOrders, action.filename)
+    } else if (action.type === 'month') {
+      const m = new Date().getMonth(); const y = new Date().getFullYear()
+      const monthOrders = orders.filter(o => new Date(o.created_at).getMonth()===m && new Date(o.created_at).getFullYear()===y)
+      downloadCSV(monthOrders, action.filename)
+    } else {
+      downloadCSV(orders, action.filename)
+    }
+  }
+
   async function sendToAI() {
     if (!chatInput.trim()) return
+    stopMic()
     const userMsg = chatInput.trim(); setChatInput('')
     setChatMsgs(prev => [...prev, { role: 'user', content: userMsg }])
     setAiLoading(true)
 
-    // Build rich context
     const totalRev7 = revenueData.reduce((s, d) => s + d.revenue, 0)
     const itemStats = Object.entries(itemFreq).sort((a, b) => b[1] - a[1]).slice(0, 10)
       .map(([name, count]) => `${name}: ${count}x`).join(', ')
@@ -316,7 +398,7 @@ export default function AdminPage() {
       return sum
     })()
 
-    const context = `You are a helpful business assistant for a café called CaféQ. Answer in the same language the owner uses (Hindi or English). Be concise and friendly.
+    const context = `You are a helpful business assistant for a café called CaféQ. Answer in the same language the owner uses. They may write in any Indian language including Hindi, English, Gujarati, Marathi, Tamil, Telugu, Kannada, Bengali, Punjabi, Malayalam, Odia, Urdu, or any other Indian language. Always detect the language and respond in the exact same language. Be very friendly and helpful. Keep responses concise. If the owner asks for a report or to download data, mention that a download button will appear below your message.
 
 BUSINESS DATA:
 - Today's revenue: Rs.${todayRevenue} (${todayOrders.length} orders)
@@ -342,7 +424,8 @@ BUSINESS DATA:
       })
       const data = await res.json()
       const reply = data.choices?.[0]?.message?.content || 'Sorry, try again!'
-      setChatMsgs(prev => [...prev, { role: 'assistant', content: reply }])
+      const download = detectDownload(userMsg + ' ' + reply)
+      setChatMsgs(prev => [...prev, { role: 'assistant', content: reply, download }])
     } catch {
       setChatMsgs(prev => [...prev, { role: 'assistant', content: 'Network error. Please try again.' }])
     }
@@ -379,6 +462,7 @@ BUSINESS DATA:
         @keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
         @keyframes dot{0%,80%,100%{transform:scale(0.6);opacity:0.4}40%{transform:scale(1);opacity:1}}
         @keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+        @keyframes micPulse{0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,0.5)}50%{box-shadow:0 0 0 8px rgba(239,68,68,0)}}
         .card{background:white;border-radius:18px;border:1px solid #f0ede8;padding:18px;}
         .inp{border:1.5px solid #e5e7eb;border-radius:12px;padding:10px 14px;font-size:0.9rem;color:#1a1a1a;background:#fafafa;outline:none;width:100%;font-family:inherit;}
         .inp:focus{border-color:#f97316;}
@@ -387,6 +471,7 @@ BUSINESS DATA:
         .badge{border-radius:50px;padding:2px 8px;font-size:0.7rem;font-weight:700;}
         .btn-primary{background:#f97316;color:white;border:none;border-radius:12px;padding:10px 18px;font-weight:700;font-size:0.9rem;cursor:pointer;font-family:inherit;}
         .btn-secondary{background:#f3f4f6;color:#374151;border:none;border-radius:12px;padding:10px 18px;font-weight:600;font-size:0.85rem;cursor:pointer;font-family:inherit;}
+        .mic-on{background:#ef4444!important;animation:micPulse 1.5s ease-in-out infinite;}
         @media(min-width:768px){
           .mobile-header{display:none!important;}
           .bottom-nav{display:none!important;}
@@ -454,8 +539,6 @@ BUSINESS DATA:
                 <h2 style={{ fontWeight:800, fontSize:'1.4rem', color:'#1a1a1a' }}>Good day! 👋</h2>
                 <p style={{ color:'#9ca3af', fontSize:'0.82rem', marginTop:2 }}>Here's your café today</p>
               </div>
-
-              {/* Stat cards */}
               <div style={{ display:'grid', gridTemplateColumns:'repeat(2,1fr)', gap:10, marginBottom:14 }}>
                 {[
                   { icon:'💰', label:'Revenue Today', value:`Rs.${todayRevenue}`, sub:`Fees: Rs.${todayConvFee}`, color:'#f97316' },
@@ -471,8 +554,6 @@ BUSINESS DATA:
                   </div>
                 ))}
               </div>
-
-              {/* Busiest slot + payment */}
               <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10, marginBottom:14 }}>
                 <div className="card" style={{ padding:16 }}>
                   <p style={{ fontSize:'1.2rem', marginBottom:4 }}>⏰</p>
@@ -490,17 +571,13 @@ BUSINESS DATA:
                   <p style={{ color:'#9ca3af', fontSize:'0.68rem' }}>💵 Rs.{todayCash} Cash</p>
                 </div>
               </div>
-
-              {/* Live order feed */}
               <div className="card">
                 <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:14 }}>
                   <div>
                     <p style={{ fontWeight:700, color:'#1a1a1a', fontSize:'1rem' }}>📋 Today's Orders</p>
                     <p style={{ color:'#9ca3af', fontSize:'0.72rem', marginTop:2 }}>Auto-updates every 10s</p>
                   </div>
-                  <button onClick={() => setTab('orders')} style={{ background:'#fff7ed', border:'none', borderRadius:8, padding:'5px 12px', color:'#f97316', fontWeight:700, fontSize:'0.75rem', cursor:'pointer' }}>
-                    See All
-                  </button>
+                  <button onClick={() => setTab('orders')} style={{ background:'#fff7ed', border:'none', borderRadius:8, padding:'5px 12px', color:'#f97316', fontWeight:700, fontSize:'0.75rem', cursor:'pointer' }}>See All</button>
                 </div>
                 {todayOrders.slice(0,8).map(o => {
                   const sc = statusColor(o.status)
@@ -510,9 +587,7 @@ BUSINESS DATA:
                         <div style={{ width:8, height:8, borderRadius:'50%', background:sc.dot, flexShrink:0, animation: o.status==='pending'?'pulse 1.5s infinite':'none' }} />
                         <div>
                           <p style={{ fontWeight:700, color:'#1a1a1a', fontSize:'0.85rem' }}>#{o.order_number} · {o.users?.name}</p>
-                          <p style={{ color:'#9ca3af', fontSize:'0.7rem' }}>
-                            {o.order_items?.map(i => `${i.menu_items?.name}×${i.quantity}`).join(', ')}
-                          </p>
+                          <p style={{ color:'#9ca3af', fontSize:'0.7rem' }}>{o.order_items?.map(i => `${i.menu_items?.name}×${i.quantity}`).join(', ')}</p>
                           <p style={{ color:'#c4c4c4', fontSize:'0.67rem' }}>{fmt(o.pickup_time)} · {o.payment_method==='cash'?'💵 Cash':'📱 UPI'}</p>
                         </div>
                       </div>
@@ -548,7 +623,7 @@ BUSINESS DATA:
                   const sc = statusColor(o.status); const isEx = expandedOrder===o.id
                   return (
                     <div key={o.id} className="card" style={{ padding:0, overflow:'hidden' }}>
-                      <button onClick={() => setExpandedOrder(isEx?null:o.id)}
+                      <div onClick={() => setExpandedOrder(isEx?null:o.id)}
                         style={{ width:'100%', padding:'14px 16px', background:'none', border:'none', cursor:'pointer', display:'flex', justifyContent:'space-between', alignItems:'center', textAlign:'left' }}>
                         <div style={{ display:'flex', alignItems:'center', gap:10 }}>
                           <div style={{ width:9, height:9, borderRadius:'50%', background:sc.dot, flexShrink:0 }} />
@@ -571,7 +646,7 @@ BUSINESS DATA:
                           </div>
                           {isEx ? <ChevronUp size={15} color="#9ca3af" /> : <ChevronDown size={15} color="#9ca3af" />}
                         </div>
-                      </button>
+                      </div>
                       {isEx && (
                         <div style={{ borderTop:'1px solid #f5f5f5', padding:'12px 16px', background:'#fafafa' }}>
                           {o.order_items?.map((item, j) => (
@@ -620,8 +695,6 @@ BUSINESS DATA:
                     style={{ background:revenueRange===v?'#f97316':'white', color:revenueRange===v?'white':'#6b7280', boxShadow:'0 1px 4px rgba(0,0,0,0.06)' }}>{l}</button>
                 ))}
               </div>
-
-              {/* Summary */}
               <div className="card" style={{ marginBottom:14, display:'flex', justifyContent:'space-between' }}>
                 <div>
                   <p style={{ color:'#9ca3af', fontSize:'0.78rem' }}>Total Revenue</p>
@@ -632,8 +705,6 @@ BUSINESS DATA:
                   <p style={{ fontWeight:900, fontSize:'1.8rem', color:'#1a1a1a', lineHeight:1.1 }}>{revenueData.reduce((s,d)=>s+d.count,0)}</p>
                 </div>
               </div>
-
-              {/* Bar chart */}
               <div className="card" style={{ marginBottom:14 }}>
                 <p style={{ fontWeight:700, color:'#1a1a1a', marginBottom:14, fontSize:'0.95rem' }}>📊 Revenue Chart</p>
                 <div style={{ display:'flex', gap:revenueRange==='month'?3:6, alignItems:'flex-end', height:140, overflowX:'auto', paddingBottom:4 }}>
@@ -646,8 +717,6 @@ BUSINESS DATA:
                   ))}
                 </div>
               </div>
-
-              {/* Peak hours heatmap */}
               <div className="card" style={{ marginBottom:14 }}>
                 <p style={{ fontWeight:700, color:'#1a1a1a', marginBottom:14, fontSize:'0.95rem' }}>🔥 Peak Hours (All Time)</p>
                 <div style={{ display:'flex', flexDirection:'column', gap:6 }}>
@@ -663,8 +732,6 @@ BUSINESS DATA:
                   ))}
                 </div>
               </div>
-
-              {/* Top items */}
               <div className="card">
                 <p style={{ fontWeight:700, color:'#1a1a1a', marginBottom:14, fontSize:'0.95rem' }}>🏆 Top Items</p>
                 {(() => {
@@ -695,8 +762,6 @@ BUSINESS DATA:
             <div style={{ animation:'fadeUp .3s ease' }}>
               <h2 style={{ fontWeight:800, fontSize:'1.4rem', color:'#1a1a1a', marginBottom:4 }}>Menu</h2>
               <p style={{ color:'#9ca3af', fontSize:'0.82rem', marginBottom:16 }}>Toggle · Change price · Mark sold out</p>
-
-              {/* Dead stock warning */}
               {deadStock.length > 0 && (
                 <div style={{ background:'#fefce8', border:'1px solid #fde68a', borderRadius:14, padding:'12px 14px', marginBottom:16, display:'flex', alignItems:'flex-start', gap:10 }}>
                   <p style={{ fontSize:'1.2rem' }}>⚠️</p>
@@ -707,8 +772,6 @@ BUSINESS DATA:
                   </div>
                 </div>
               )}
-
-              {/* Add new item */}
               <div className="card" style={{ marginBottom:16 }}>
                 <p style={{ fontWeight:700, color:'#1a1a1a', marginBottom:12, fontSize:'0.95rem' }}>➕ Add New Item</p>
                 <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:8 }}>
@@ -722,8 +785,6 @@ BUSINESS DATA:
                   {addingItem ? 'Adding...' : 'Add to Menu'}
                 </button>
               </div>
-
-              {/* Menu items grouped by category */}
               {Array.from(new Set(menuItems.map(m=>m.category))).map(cat => (
                 <div key={cat} style={{ marginBottom:18 }}>
                   <p style={{ fontWeight:700, color:'#6b7280', fontSize:'0.75rem', textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:8 }}>{cat}</p>
@@ -777,12 +838,11 @@ BUSINESS DATA:
           {tab === 'reports' && (
             <div style={{ animation:'fadeUp .3s ease' }}>
               <h2 style={{ fontWeight:800, fontSize:'1.4rem', color:'#1a1a1a', marginBottom:16 }}>Reports & Invoices</h2>
-
               <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10, marginBottom:16 }}>
                 {[
                   { icon:'📅', title:'Today\'s Report', sub:`${todayOrders.length} orders · Rs.${todayRevenue}`, action:()=>downloadCSV(todayOrders,`cafeq-today-${todayStr}.csv`), label:'Download CSV' },
                   { icon:'📊', title:'This Week', sub:`${revenueData.reduce((s,d)=>s+d.count,0)} orders`, action:()=>{
-                    const weekOrders = orders.filter(o=>{const d=new Date(o.created_at);const now=new Date();return (now.getTime()-d.getTime())<7*24*60*60*1000})
+                    const weekOrders = orders.filter(o=>{const d=new Date(o.created_at);return (Date.now()-d.getTime())<7*24*60*60*1000})
                     downloadCSV(weekOrders,`cafeq-week.csv`)
                   }, label:'Download CSV' },
                   { icon:'📈', title:'This Month', sub:'Full month data', action:()=>{
@@ -802,8 +862,6 @@ BUSINESS DATA:
                   </div>
                 ))}
               </div>
-
-              {/* Print individual orders */}
               <div className="card">
                 <p style={{ fontWeight:700, color:'#1a1a1a', marginBottom:14, fontSize:'0.95rem' }}>🖨️ Print Invoice</p>
                 <div style={{ position:'relative', marginBottom:12 }}>
@@ -831,32 +889,33 @@ BUSINESS DATA:
           {tab === 'ai' && (
             <div style={{ animation:'fadeUp .3s ease' }}>
               <h2 style={{ fontWeight:800, fontSize:'1.4rem', color:'#1a1a1a', marginBottom:4 }}>AI Assistant ✨</h2>
-              <p style={{ color:'#9ca3af', fontSize:'0.82rem', marginBottom:16 }}>Ask anything in Hindi or English</p>
+              <p style={{ color:'#9ca3af', fontSize:'0.82rem', marginBottom:16 }}>Koi bhi Indian language mein pucho</p>
 
-              {/* Suggestions */}
+              {/* Suggestion chips */}
               <div style={{ display:'flex', gap:6, flexWrap:'wrap', marginBottom:14 }}>
-                {[
-                  'Aaj kitna revenue hua?',
-                  'Best selling item?',
-                  'Compare this week vs last',
-                  'Dead stock items?',
-                  'Busiest time of day?',
-                ].map(q => (
-                  <button key={q} onClick={() => { setChatInput(q) }}
+                {['Aaj kitna revenue hua?','Best selling item?','Compare this week vs last','Dead stock items?','Aaj ka report download karo'].map(q => (
+                  <button key={q} onClick={() => setChatInput(q)}
                     style={{ background:'#fff7ed', border:'1px solid #fed7aa', borderRadius:50, padding:'5px 12px', fontSize:'0.75rem', color:'#c2410c', fontWeight:600, cursor:'pointer' }}>
                     {q}
                   </button>
                 ))}
               </div>
 
-              {/* Chat */}
+              {/* Chat window */}
               <div className="card" style={{ padding:0, overflow:'hidden' }}>
                 <div style={{ height:420, overflowY:'auto', padding:'16px', display:'flex', flexDirection:'column', gap:10 }}>
-                  {chatMsgs.map((m,i) => (
-                    <div key={i} style={{ display:'flex', justifyContent:m.role==='user'?'flex-end':'flex-start' }}>
+                  {chatMsgs.map((m, i) => (
+                    <div key={i} style={{ display:'flex', flexDirection:'column', alignItems: m.role==='user' ? 'flex-end' : 'flex-start', gap:6 }}>
                       <div style={{ maxWidth:'88%', padding:'10px 14px', borderRadius:m.role==='user'?'16px 16px 4px 16px':'16px 16px 16px 4px', background:m.role==='user'?'#f97316':'#f8f7f4', color:m.role==='user'?'white':'#1a1a1a', fontSize:'0.875rem', lineHeight:1.5, whiteSpace:'pre-wrap' }}>
                         {m.content}
                       </div>
+                      {/* ── DOWNLOAD BUTTON in chat ── */}
+                      {m.role === 'assistant' && m.download && (
+                        <button onClick={() => handleDownload(m.download!)}
+                          style={{ display:'flex', alignItems:'center', gap:6, background:'white', border:'1.5px solid #f97316', borderRadius:50, padding:'6px 14px', color:'#f97316', fontWeight:700, fontSize:'0.78rem', cursor:'pointer', boxShadow:'0 2px 8px rgba(249,115,22,0.15)' }}>
+                          <Download size={13} /> {m.download.label}
+                        </button>
+                      )}
                     </div>
                   ))}
                   {aiLoading && (
@@ -868,15 +927,50 @@ BUSINESS DATA:
                   )}
                   <div ref={chatEndRef} />
                 </div>
-                <div style={{ padding:'12px 14px', borderTop:'1px solid #f0ede8', display:'flex', gap:8 }}>
-                  <input value={chatInput} onChange={e=>setChatInput(e.target.value)} onKeyDown={e=>e.key==='Enter'&&sendToAI()}
-                    placeholder="Ask about your business..." className="inp"
-                    style={{ flex:1, padding:'10px 14px' }} />
-                  <button onClick={sendToAI} className="btn-primary" style={{ padding:'0 16px', height:44, display:'flex', alignItems:'center' }}>
+
+                {/* Input bar with mic toggle */}
+                <div style={{ padding:'12px 14px', borderTop:'1px solid #f0ede8', display:'flex', gap:8, alignItems:'center' }}>
+                  {/* Mic status indicator */}
+                  {micOn && (
+                    <div style={{ display:'flex', alignItems:'center', gap:4, background:'#fef2f2', borderRadius:50, padding:'4px 10px', flexShrink:0 }}>
+                      <div style={{ width:6, height:6, borderRadius:'50%', background:'#ef4444', animation:'pulse 1s infinite' }} />
+                      <p style={{ color:'#ef4444', fontSize:'0.7rem', fontWeight:700 }}>Listening...</p>
+                    </div>
+                  )}
+                  <input value={chatInput} onChange={e => setChatInput(e.target.value)}
+                    onKeyDown={e => e.key==='Enter' && sendToAI()}
+                    placeholder={micOn ? 'Speak now...' : 'Type or tap mic to speak...'}
+                    className="inp" style={{ flex:1, padding:'10px 14px' }} />
+
+                  {/* Mic toggle button */}
+                  {micSupported && (
+                    <button onClick={toggleMic}
+                      className={micOn ? 'mic-on' : ''}
+                      style={{ width:44, height:44, borderRadius:'50%', border:'none', background: micOn ? '#ef4444' : '#f3f4f6', color: micOn ? 'white' : '#6b7280', display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer', flexShrink:0, transition:'all .2s' }}
+                      title={micOn ? 'Tap to stop mic' : 'Tap to speak'}>
+                      {micOn ? <MicOff size={18} /> : <Mic size={18} />}
+                    </button>
+                  )}
+
+                  {/* Send button */}
+                  <button onClick={sendToAI} className="btn-primary"
+                    style={{ padding:'0 16px', height:44, display:'flex', alignItems:'center', flexShrink:0 }}>
                     <Send size={16} />
                   </button>
                 </div>
               </div>
+
+              {/* Mic instructions */}
+              {micSupported && (
+                <p style={{ color:'#9ca3af', fontSize:'0.72rem', textAlign:'center', marginTop:10 }}>
+                  🎤 Mic button: tap once to start → tap again to stop · Works in any language
+                </p>
+              )}
+              {!micSupported && (
+                <p style={{ color:'#9ca3af', fontSize:'0.72rem', textAlign:'center', marginTop:10 }}>
+                  🎤 Voice input not supported on this browser. Use Chrome for mic support.
+                </p>
+              )}
             </div>
           )}
 
@@ -884,8 +978,6 @@ BUSINESS DATA:
           {tab === 'staff' && (
             <div style={{ animation:'fadeUp .3s ease' }}>
               <h2 style={{ fontWeight:800, fontSize:'1.4rem', color:'#1a1a1a', marginBottom:16 }}>Staff Management</h2>
-
-              {/* Change receptionist PIN */}
               <div className="card" style={{ marginBottom:14 }}>
                 <p style={{ fontWeight:700, color:'#1a1a1a', marginBottom:4, fontSize:'0.95rem' }}>🔐 Change Receptionist PIN</p>
                 <p style={{ color:'#9ca3af', fontSize:'0.78rem', marginBottom:14 }}>Current PIN is used by receptionist to log in at counter</p>
@@ -897,27 +989,21 @@ BUSINESS DATA:
                   {newPin.length===4 && confirmPin.length===4 && newPin!==confirmPin && (
                     <p style={{ color:'#ef4444', fontSize:'0.78rem' }}>PINs don't match</p>
                   )}
-                  <button
-                    onClick={async()=>{
-                      if(newPin.length!==4||newPin!==confirmPin)return
-                      // Store in owner_settings table
-                      await supabase.from('owner_settings').upsert({ id:1, receptionist_pin: newPin })
-                      setPinSaved(true); setNewPin(''); setConfirmPin('')
-                      setTimeout(()=>setPinSaved(false),3000)
-                    }}
-                    className="btn-primary"
-                    disabled={newPin.length!==4||newPin!==confirmPin}
+                  <button onClick={async()=>{
+                    if(newPin.length!==4||newPin!==confirmPin)return
+                    await supabase.from('owner_settings').upsert({ id:1, receptionist_pin: newPin })
+                    setPinSaved(true); setNewPin(''); setConfirmPin('')
+                    setTimeout(()=>setPinSaved(false),3000)
+                  }} className="btn-primary" disabled={newPin.length!==4||newPin!==confirmPin}
                     style={{ opacity:newPin.length===4&&newPin===confirmPin?1:0.5 }}>
                     Save New PIN
                   </button>
-                  {pinSaved && <p style={{ color:'#22c55e', fontWeight:600, fontSize:'0.82rem' }}>✅ PIN saved! Staff portal uses it on the next login.</p>}
+                  {pinSaved && <p style={{ color:'#22c55e', fontWeight:600, fontSize:'0.82rem' }}>✅ PIN saved!</p>}
                 </div>
                 <div style={{ background:'#fff7ed', borderRadius:10, padding:'10px 12px', marginTop:12 }}>
-                  <p style={{ color:'#c2410c', fontSize:'0.75rem', fontWeight:600 }}>⚠️ Staff at /worker read this PIN from the database. If nothing is saved yet, the default is 1234.</p>
+                  <p style={{ color:'#c2410c', fontSize:'0.75rem', fontWeight:600 }}>⚠️ Staff at /worker read this PIN from the database. Default is 1234.</p>
                 </div>
               </div>
-
-              {/* Order history by staff */}
               <div className="card">
                 <p style={{ fontWeight:700, color:'#1a1a1a', marginBottom:4, fontSize:'0.95rem' }}>📋 Today's Order Activity</p>
                 <p style={{ color:'#9ca3af', fontSize:'0.78rem', marginBottom:14 }}>Summary of what was processed today</p>

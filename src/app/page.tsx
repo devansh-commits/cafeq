@@ -347,7 +347,7 @@ export default function Home() {
           <div onClick={() => setShowCart(false)}
             style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.25)', zIndex: 50, backdropFilter: 'blur(2px)' }} />
           {/* Cart panel — fixed below header */}
-          <div style={{ position: 'fixed', top: '70px', left: '50%', transform: 'translateX(-50%)', width: '100%', maxWidth: '640px', padding: '0 16px', zIndex: 51, animation: 'cartSlide 0.2s ease forwards' }}>
+          <div style={{ position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 51, padding: '0', animation: 'cartSlide 0.2s ease forwards' }}>
             <div style={{ background: 'white', borderRadius: '20px', boxShadow: '0 12px 40px rgba(0,0,0,0.18)', border: '1px solid #fed7aa', maxHeight: 'calc(100vh - 120px)', overflowY: 'auto' }}>
               <div style={{ padding: '16px 16px 0' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>

@@ -3,7 +3,6 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
 import { LogOut, Printer, Bell, ChevronLeft, ChevronRight } from 'lucide-react'
 
-/** Owner override — matches admin PIN gate. */
 const OWNER_PIN = '9999'
 
 type OrderItem = { quantity: number; price_at_order: number; menu_items: { name: string } }
@@ -17,7 +16,6 @@ type Order = {
 type SlotInfo = { slot_time: string; max_orders: number; current_orders: number }
 type Toast = { id: number; msg: string }
 
-// Convert DB slot_time string like "01:15 PM" to total minutes since midnight
 function slotTimeToMinutes(slotStr: string): number {
   const upper = slotStr.toUpperCase().trim()
   const isPM = upper.includes('PM')
@@ -31,7 +29,6 @@ function slotTimeToMinutes(slotStr: string): number {
   return h * 60 + m
 }
 
-// Match an ISO pickup_time to the closest DB slot_time
 function matchToSlot(isoTime: string, slots: SlotInfo[]): string {
   const d = new Date(isoTime)
   const orderMins = d.getHours() * 60 + d.getMinutes()
@@ -110,6 +107,7 @@ export default function WorkerPage() {
   const [allSlots, setAllSlots] = useState<SlotInfo[]>([])
   const [ordersBySlot, setOrdersBySlot] = useState<Record<string, Order[]>>({})
   const [activeSlot, setActiveSlot] = useState<string | null>(null)
+  const [activeTab, setActiveTab] = useState<'summary' | 'orders'>('orders')
   const [toasts, setToasts] = useState<Toast[]>([])
   const [showProfile, setShowProfile] = useState(false)
   const [newOrderDots, setNewOrderDots] = useState<Record<string, boolean>>({})
@@ -126,17 +124,10 @@ export default function WorkerPage() {
 
   const fetchAll = useCallback(async () => {
     const today = new Date().toISOString().split('T')[0]
+    const { data: slotsData } = await supabase
+      .from('time_slots').select('slot_time, max_orders, current_orders')
+      .eq('date', today).order('slot_time')
 
-    // Fetch ALL slots for today
-    const { data: slotsData, error: slotErr } = await supabase
-      .from('time_slots')
-      .select('slot_time, max_orders, current_orders')
-      .eq('date', today)
-      .order('slot_time')
-
-    if (slotErr) console.error('Slot fetch error:', slotErr)
-
-    // Auto-generate if none exist
     if (!slotsData || slotsData.length === 0) {
       await supabase.rpc('generate_daily_slots', { target_date: today })
       const { data: newSlots } = await supabase
@@ -144,27 +135,22 @@ export default function WorkerPage() {
         .eq('date', today).order('slot_time')
       if (newSlots) { setAllSlots(newSlots); slotsRef.current = newSlots }
     } else {
-      setAllSlots(slotsData)
-      slotsRef.current = slotsData
+      setAllSlots(slotsData); slotsRef.current = slotsData
     }
 
     const currentSlots = slotsRef.current
-
-    // Fetch only pending + preparing + ready orders (NOT completed)
     const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0)
-    const { data: ordersData, error: orderErr } = await supabase
+    const { data: ordersData } = await supabase
       .from('orders')
       .select(`id, order_number, status, total_amount, convenience_fee, pickup_time,
         payment_method, created_at, users(name, phone),
         order_items(quantity, price_at_order, menu_items(name))`)
       .gte('created_at', todayStart.toISOString())
-      .in('status', ['pending', 'preparing', 'ready'])  // ← only active, completed auto-disappears
+      .in('status', ['pending', 'preparing', 'ready'])
       .order('pickup_time', { ascending: true })
 
-    if (orderErr) console.error('Order fetch error:', orderErr)
     if (!ordersData) return
 
-    // Detect new orders
     const currentIds = new Set(ordersData.map((o: any) => o.id))
     const newOnes = ordersData.filter((o: any) => !prevOrderIds.current.has(o.id))
 
@@ -179,7 +165,6 @@ export default function WorkerPage() {
         setNewOrderDots(prev => ({ ...prev, [slotKey]: true }))
         setBlinkSlots(prev => ({ ...prev, [slotKey]: true }))
         setTimeout(() => setBlinkSlots(prev => ({ ...prev, [slotKey]: false })), 4000)
-        // Auto-print
         setTimeout(() => printSlip(o as Order, true), 800)
       })
     }
@@ -187,7 +172,6 @@ export default function WorkerPage() {
     prevOrderIds.current = currentIds
     initialLoad.current = false
 
-    // Group orders by matched slot key
     const grouped: Record<string, Order[]> = {}
     ordersData.forEach((o: any) => {
       const key = matchToSlot(o.pickup_time, currentSlots)
@@ -196,7 +180,6 @@ export default function WorkerPage() {
     })
     setOrdersBySlot(grouped)
 
-    // Set first slot with orders as default active
     if (!activeSlot) {
       const firstWithOrders = Object.keys(grouped)[0]
       if (firstWithOrders) setActiveSlot(firstWithOrders)
@@ -217,10 +200,8 @@ export default function WorkerPage() {
   }
 
   async function markCollected(orderId: string) {
-    // Find the order to get its slot
     const order = activeOrders.find(o => o.id === orderId)
     await supabase.from('orders').update({ status: 'completed' }).eq('id', orderId)
-    // Decrement slot count
     if (order && activeSlot) {
       const slotInfo = allSlots.find(s => s.slot_time === activeSlot)
       if (slotInfo && slotInfo.current_orders > 0) {
@@ -234,10 +215,7 @@ export default function WorkerPage() {
   }
 
   async function handleLogin() {
-    if (pin === OWNER_PIN) {
-      window.location.href = '/admin'
-      return
-    }
+    if (pin === OWNER_PIN) { window.location.href = '/admin'; return }
     const { data } = await supabase.from('owner_settings').select('receptionist_pin').eq('id', 1).maybeSingle()
     const expected = data?.receptionist_pin || '1234'
     if (pin === expected) {
@@ -320,6 +298,22 @@ export default function WorkerPage() {
         .scroll-btn:hover{background:#222;color:white}
         ::-webkit-scrollbar{height:3px;width:3px}
         ::-webkit-scrollbar-thumb{background:#2a2a2a;border-radius:4px}
+
+        /* DESKTOP: side by side split */
+        .split-screen { display: grid; grid-template-columns: 300px 1fr; flex: 1; overflow: hidden; }
+        .mobile-tabs { display: none; }
+        .panel-summary { display: flex !important; }
+        .panel-orders { display: flex !important; }
+
+        /* MOBILE: stacked with tabs */
+        @media (max-width: 768px) {
+          .split-screen { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
+          .mobile-tabs { display: flex !important; }
+          .panel-summary { display: none; flex-direction: column; overflow: hidden; flex: 1; }
+          .panel-orders { display: none; flex-direction: column; overflow: hidden; flex: 1; }
+          .panel-summary.tab-active { display: flex !important; }
+          .panel-orders.tab-active { display: flex !important; }
+        }
       `}</style>
 
       {/* TOASTS */}
@@ -338,8 +332,6 @@ export default function WorkerPage() {
           <span style={{ fontWeight: 900, color: '#f97316', fontSize: '.95rem' }}>CaféQ</span>
         </div>
         <button className="scroll-btn" onClick={() => scrollSlots('left')}><ChevronLeft size={14} /></button>
-
-        {/* ALL SLOTS */}
         <div ref={slotBarRef} style={{ flex: 1, display: 'flex', gap: 5, overflowX: 'auto', scrollbarWidth: 'none', padding: '2px 0' }}>
           {allSlots.length === 0 ? (
             <span style={{ color: '#374151', fontSize: '.78rem', padding: '8px 0', whiteSpace: 'nowrap' }}>Loading slots...</span>
@@ -357,21 +349,13 @@ export default function WorkerPage() {
                 <div style={{ fontSize: '.74rem', fontWeight: 700 }}>{slot.slot_time}</div>
                 <div style={{ marginTop: 3 }}>
                   {hasOrders ? (
-                    <span style={{
-                      background: isActive ? 'rgba(255,255,255,.3)' : '#f97316',
-                      color: 'white', borderRadius: 50, padding: '1px 7px',
-                      fontSize: '.67rem', fontWeight: 800, display: 'inline-block',
-                      animation: isBlink ? 'blink 0.5s ease-in-out 6' : 'none'
-                    }}>
+                    <span style={{ background: isActive ? 'rgba(255,255,255,.3)' : '#f97316', color: 'white', borderRadius: 50, padding: '1px 7px', fontSize: '.67rem', fontWeight: 800, display: 'inline-block', animation: isBlink ? 'blink 0.5s ease-in-out 6' : 'none' }}>
                       {activeCount}/{slot.max_orders}
                     </span>
                   ) : (
-                    <span style={{ color: isActive ? 'rgba(255,255,255,.4)' : '#1e1e1e', fontSize: '.65rem' }}>
-                      0/{slot.max_orders}
-                    </span>
+                    <span style={{ color: isActive ? 'rgba(255,255,255,.4)' : '#1e1e1e', fontSize: '.65rem' }}>0/{slot.max_orders}</span>
                   )}
                 </div>
-                {/* Red dot */}
                 {hasNew && !isActive && (
                   <span style={{ position: 'absolute', top: -4, right: -4, width: 10, height: 10, background: '#ef4444', borderRadius: '50%', border: '2px solid #0d0d0d', animation: 'pulse 1s infinite' }} />
                 )}
@@ -379,10 +363,7 @@ export default function WorkerPage() {
             )
           })}
         </div>
-
         <button className="scroll-btn" onClick={() => scrollSlots('right')}><ChevronRight size={14} /></button>
-
-        {/* Profile */}
         <div style={{ position: 'relative', flexShrink: 0 }}>
           <button onClick={() => setShowProfile(!showProfile)}
             style={{ width: 36, height: 36, borderRadius: '50%', background: '#f97316', border: 'none', cursor: 'pointer', fontWeight: 900, fontSize: '.9rem', color: 'white' }}>
@@ -399,7 +380,19 @@ export default function WorkerPage() {
         </div>
       </div>
 
-      {/* SPLIT SCREEN */}
+      {/* MOBILE TABS — only visible on phone */}
+      <div className="mobile-tabs" style={{ background: '#111', borderBottom: '1px solid #1a1a1a', flexShrink: 0 }}>
+        <button onClick={() => setActiveTab('summary')}
+          style={{ flex: 1, padding: '10px', border: 'none', background: activeTab === 'summary' ? '#f97316' : 'transparent', color: activeTab === 'summary' ? 'white' : '#6b7280', fontWeight: 700, fontSize: '.8rem', cursor: 'pointer' }}>
+          📦 Summary
+        </button>
+        <button onClick={() => setActiveTab('orders')}
+          style={{ flex: 1, padding: '10px', border: 'none', background: activeTab === 'orders' ? '#f97316' : 'transparent', color: activeTab === 'orders' ? 'white' : '#6b7280', fontWeight: 700, fontSize: '.8rem', cursor: 'pointer' }}>
+          🎫 Orders {activeOrders.length > 0 ? `(${activeOrders.length})` : ''}
+        </button>
+      </div>
+
+      {/* EMPTY STATE */}
       {activeOrders.length === 0 ? (
         <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div style={{ textAlign: 'center' }}>
@@ -409,10 +402,11 @@ export default function WorkerPage() {
           </div>
         </div>
       ) : (
-        <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '300px 1fr', overflow: 'hidden' }}>
+        <div className="split-screen">
 
-          {/* LEFT — Summary */}
-          <div style={{ borderRight: '1px solid #1a1a1a', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          {/* LEFT — Slot Summary */}
+          <div className={`panel-summary ${activeTab === 'summary' ? 'tab-active' : ''}`}
+            style={{ borderRight: '1px solid #1a1a1a', flexDirection: 'column', overflow: 'hidden' }}>
             <div style={{ padding: '11px 16px', borderBottom: '1px solid #1a1a1a', background: '#111', flexShrink: 0 }}>
               <p style={{ fontWeight: 700, color: 'white', fontSize: '.88rem' }}>📦 Slot Summary</p>
               <p style={{ color: '#4b5563', fontSize: '.7rem', marginTop: 2 }}>{activeSlot} · {activeOrders.length} active orders</p>
@@ -434,17 +428,16 @@ export default function WorkerPage() {
             </div>
             <div style={{ padding: '11px 16px', borderTop: '1px solid #1a1a1a', background: '#0f0f0f', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
               <span style={{ color: '#4b5563', fontWeight: 600, fontSize: '.83rem' }}>Slot Revenue</span>
-              <span style={{ color: '#f97316', fontWeight: 900, fontSize: '1.05rem' }}>
-                Rs.{activeOrders.reduce((sum, o) => sum + o.total_amount, 0)}
-              </span>
+              <span style={{ color: '#f97316', fontWeight: 900, fontSize: '1.05rem' }}>Rs.{activeOrders.reduce((sum, o) => sum + o.total_amount, 0)}</span>
             </div>
           </div>
 
           {/* RIGHT — Per Order */}
-          <div style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+          <div className={`panel-orders ${activeTab === 'orders' ? 'tab-active' : ''}`}
+            style={{ flexDirection: 'column', overflow: 'hidden' }}>
             <div style={{ padding: '11px 16px', borderBottom: '1px solid #1a1a1a', background: '#111', flexShrink: 0 }}>
               <p style={{ fontWeight: 700, color: 'white', fontSize: '.88rem' }}>🎫 Individual Orders</p>
-              <p style={{ color: '#4b5563', fontSize: '.7rem', marginTop: 2 }}>Tick ✓ = Ready · Student notified · 2nd tick = Collected & Removed</p>
+              <p style={{ color: '#4b5563', fontSize: '.7rem', marginTop: 2 }}>Tick ✓ = Ready · 2nd tick = Collected & Removed</p>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '90px 90px 1fr 64px 34px', padding: '6px 16px', background: '#0f0f0f', borderBottom: '1px solid #1a1a1a', gap: 8, flexShrink: 0 }}>
               {['Token', 'Name', 'Items', 'Amt', '✓'].map(h => (
@@ -465,9 +458,7 @@ export default function WorkerPage() {
                     </div>
                     <div>
                       <p style={{ color: isReady ? '#4b5563' : 'white', fontWeight: 600, fontSize: '.8rem', lineHeight: 1.3 }}>{order.users?.name}</p>
-                      <p style={{ color: '#2a2a2a', fontSize: '.68rem', marginTop: 2 }}>
-                        {order.payment_method === 'cash' ? '💵 Cash' : '📱 UPI'}
-                      </p>
+                      <p style={{ color: '#2a2a2a', fontSize: '.68rem', marginTop: 2 }}>{order.payment_method === 'cash' ? '💵 Cash' : '📱 UPI'}</p>
                     </div>
                     <div>
                       {order.order_items.map((item, j) => (
@@ -476,12 +467,9 @@ export default function WorkerPage() {
                         </p>
                       ))}
                     </div>
-                    <span style={{ color: isReady ? '#2a2a2a' : '#6b7280', fontWeight: 700, fontSize: '.83rem' }}>
-                      Rs.{order.total_amount}
-                    </span>
+                    <span style={{ color: isReady ? '#2a2a2a' : '#6b7280', fontWeight: 700, fontSize: '.83rem' }}>Rs.{order.total_amount}</span>
                     <button className={`cb ${isReady ? 'done' : ''}`}
-                      onClick={() => isReady ? markCollected(order.id) : markReady(order.id)}
-                      title={isReady ? '2nd tap → Mark collected & remove' : 'Tap when ready for pickup'}>
+                      onClick={() => isReady ? markCollected(order.id) : markReady(order.id)}>
                       {isReady && <span style={{ color: 'white', fontWeight: 900, fontSize: '.85rem' }}>✓</span>}
                     </button>
                   </div>
