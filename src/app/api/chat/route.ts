@@ -1,12 +1,66 @@
 import { NextRequest, NextResponse } from 'next/server'
 
+// ── Rate limiter — works per serverless instance ──
+// On Vercel each instance is warm for ~5min, this still helps burst attacks
+const rateLimitMap = new Map<string, { count: number; resetAt: number }>()
+function checkRateLimit(ip: string): boolean {
+  const now = Date.now()
+  const entry = rateLimitMap.get(ip)
+  if (!entry || now > entry.resetAt) { rateLimitMap.set(ip, { count: 1, resetAt: now + 60_000 }); return true }
+  if (entry.count >= 15) return false
+  entry.count++; return true
+}
+
+// ── Sanitize text injected into AI prompt ──
+function sanitize(str: string): string {
+  if (!str) return ''
+  // Remove any attempt to break out of the prompt or inject instructions
+  return str
+    .replace(/\n{3,}/g, '\n\n')  // limit newlines
+    .replace(/system:|assistant:|user:/gi, '')  // remove role injection
+    .slice(0, 2000)  // hard limit
+}
+
 export async function POST(req: NextRequest) {
-  const apiKey = process.env.GROQ_API_KEY || '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'
+  // ── Origin check — only allow requests from our own domain ──
+  const origin = req.headers.get('origin') || ''
+  const host = req.headers.get('host') || ''
+  const isLocalDev = host.includes('localhost') || host.includes('192.168.')
+  const isVercel = origin.includes('cafeq') || origin.includes('vercel.app')
+  if (!isLocalDev && !isVercel && origin !== '') {
+    return NextResponse.json({ choices: [{ message: { content: 'Unauthorized' } }], items: [] }, { status: 403 })
+  }
+
+  // ── Rate limiting ──
+  const ip = req.headers.get('x-forwarded-for')?.split(',')[0] || req.headers.get('x-real-ip') || 'unknown'
+  if (!checkRateLimit(ip)) {
+    return NextResponse.json({ choices: [{ message: { content: 'Too many requests. Please wait a minute.' } }], items: [] }, { status: 429 })
+  }
+
+  const apiKey = process.env.GROQ_API_KEY || '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'
 
   try {
-    const { messages, menuContext, slotContext } = await req.json()
+    const body = await req.json()
+    const { messages, menuContext, slotContext } = body
 
-    const lastUserMsg = [...messages].reverse().find((m: any) => m.role === 'user')?.content || ''
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return NextResponse.json({ choices: [{ message: { content: 'Invalid request.' } }], items: [] }, { status: 400 })
+    }
+
+    // ── Validate message structure ──
+    for (const m of messages) {
+      if (typeof m?.content !== 'string' || m.content.length > 1000) {
+        return NextResponse.json({ choices: [{ message: { content: 'Invalid message format.' } }], items: [] }, { status: 400 })
+      }
+    }
+
+    const trimmedMessages = messages.slice(-10)
+    const lastUserMsg = [...trimmedMessages].reverse().find((m: any) => m.role === 'user')?.content || ''
+
+    // ── Sanitize contexts to prevent prompt injection via menu item names ──
+    const safeMenuContext = sanitize(menuContext || '')
+    const safeSlotContext = sanitize(slotContext || '')
+    const safeLastMsg = sanitize(lastUserMsg)
 
     const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
@@ -17,33 +71,23 @@ export async function POST(req: NextRequest) {
         messages: [
           {
             role: 'system',
-            content: `You are CafeQ cafe assistant.
-Menu items available: ${menuContext}
-Slots: ${slotContext}
+            content: `You are CafeQ cafe assistant. Only answer questions about the cafe menu, slots, and orders.
+Menu items: ${safeMenuContext}
+Slots: ${safeSlotContext}
 
-LANGUAGE RULES — follow strictly, no exceptions:
-1. DEFAULT language is ENGLISH. If unsure about language, always use English.
-2. NEVER use Hindi unless the user explicitly writes in Hindi Devanagari script (हिंदी) or says "Hindi mein batao".
-3. The user's last message is: "${lastUserMsg}"
-4. Detect the language of this message:
-   - If it contains English words → reply in English
-   - If it contains Gujarati words in Roman script (avak, ketlu, kem cho, aavak, thai, mahino, orders) → reply in Gujarati script (ગુજરાતી)
-   - If it contains Hindi Devanagari (हिंदी) → reply in Hindi
-   - If it contains Tamil, Telugu, Kannada etc → reply in that language
-   - If mixed or unclear → reply in English
-5. STRICTLY: English input = English output. Do NOT switch to Hindi for English messages.
+LANGUAGE RULES:
+1. DEFAULT is ENGLISH. If unsure, use English.
+2. NEVER use Hindi unless user writes in Hindi Devanagari script.
+3. User's last message: "${safeLastMsg}"
+4. Match the user's language exactly.
 
-When recommending food items, ALWAYS end your response with a JSON block (no markdown, exact format):
-ITEMS_JSON:[{"name":"Samosa","price":20},{"name":"Lime Juice","price":30}]
-
-If no items recommended, end with ITEMS_JSON:[]
-Before the JSON, give a friendly short answer with emojis.`,
+When recommending food items end with:
+ITEMS_JSON:[{"name":"Samosa","price":20}]
+If no items: ITEMS_JSON:[]
+Give a friendly short answer with emojis before the JSON.`,
           },
-          {
-            role: 'assistant',
-            content: 'Hello! I am your CaféQ business assistant. Ask me anything in English, Gujarati, Hindi, or any Indian language!'
-          },
-          ...messages,
+          { role: 'assistant', content: 'Hello! I am your CaféQ assistant. Ask me anything!' },
+          ...trimmedMessages.map((m: any) => ({ role: m.role, content: String(m.content).slice(0, 500) })),
         ],
       }),
     })
@@ -51,23 +95,16 @@ Before the JSON, give a friendly short answer with emojis.`,
     const text = await response.text()
     const data = JSON.parse(text)
     const raw = data.choices?.[0]?.message?.content || 'Sorry, try again!'
-
     const jsonMatch = raw.match(/ITEMS_JSON:(\[[\s\S]*?\])/)
     let items: unknown[] = []
     let reply = raw
-
     if (jsonMatch) {
-      try {
-        items = JSON.parse(jsonMatch[1]) as unknown[]
-        reply = raw.replace(/ITEMS_JSON:\[[\s\S]*?\]/, '').trim()
-      } catch {
-        items = []
-      }
+      try { items = JSON.parse(jsonMatch[1]) as unknown[]; reply = raw.replace(/ITEMS_JSON:\[[\s\S]*?\]/, '').trim() }
+      catch { items = [] }
     }
-
     return NextResponse.json({ choices: [{ message: { content: reply } }], items })
   } catch (err) {
-    console.error('ERR:', err)
-    return NextResponse.json({ choices: [{ message: { content: 'Error!' } }], items: [] })
+    // Don't leak error details in production
+    return NextResponse.json({ choices: [{ message: { content: 'Something went wrong. Please try again.' } }], items: [] })
   }
 }
