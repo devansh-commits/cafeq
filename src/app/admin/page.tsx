@@ -1,6 +1,8 @@
 'use client'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
+import bcrypt from 'bcryptjs'
+import { APP_NAME, APP_TAGLINE } from '@/lib/config'
 import {
   LayoutDashboard, ShoppingBag, TrendingUp, UtensilsCrossed,
   LogOut, RefreshCw, Search, ToggleLeft, ToggleRight,
@@ -32,8 +34,9 @@ const TABS = [
   { id: 'staff', label: 'Staff', icon: Users },
 ]
 
-function fmt(iso: string) { return new Date(iso).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) }
-function fmtDate(iso: string) { return new Date(iso).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: '2-digit' }) }
+function toUTC(iso: string) { return iso.includes('Z') || iso.includes('+') ? iso : iso.replace(' ', 'T') + 'Z' }
+function fmt(iso: string) { return new Date(toUTC(iso)).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }) }
+function fmtDate(iso: string) { return new Date(toUTC(iso)).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: '2-digit', timeZone: 'Asia/Kolkata' }) }
 function statusColor(s: string) {
   if (s === 'pending') return { bg: '#fff7ed', text: '#c2410c', dot: '#f97316' }
   if (s === 'preparing') return { bg: '#fefce8', text: '#854d0e', dot: '#eab308' }
@@ -121,6 +124,12 @@ export default function AdminPage() {
   const [pinSaved, setPinSaved] = useState(false)
   const [newItem, setNewItem] = useState({ name: '', price: '', category: '', description: '', prep_time_minutes: '5' })
   const [addingItem, setAddingItem] = useState(false)
+  const [cafeOpen, setCafeOpen] = useState(true)
+  const [togglingCafe, setTogglingCafe] = useState(false)
+  const [pinAttempts, setPinAttempts] = useState(0)
+  const [lockedUntil, setLockedUntil] = useState(0)
+  const [tokenResetDone, setTokenResetDone] = useState(false)
+  const [resettingToken, setResettingToken] = useState(false)
 
   // ── Mic state ──
   const [micOn, setMicOn] = useState(false)
@@ -185,8 +194,30 @@ export default function AdminPage() {
   }
 
   useEffect(() => {
-    if (sessionStorage.getItem('cafeq_owner') === 'true') setAuthed(true)
+    const ownerSession = sessionStorage.getItem('cafeq_owner')
+    const ownerLoginTime = sessionStorage.getItem('cafeq_owner_time')
+    const EIGHT_HOURS = 8 * 60 * 60 * 1000
+    if (ownerSession === 'true' && ownerLoginTime) {
+      if (Date.now() - parseInt(ownerLoginTime) < EIGHT_HOURS) {
+        setAuthed(true)
+        window.history.pushState({ cafeq: 'admin' }, '')
+      } else {
+        sessionStorage.removeItem('cafeq_owner')
+        sessionStorage.removeItem('cafeq_owner_time')
+      }
+    }
   }, [])
+
+  useEffect(() => {
+    if (!authed) return
+    window.history.pushState({ cafeq: 'admin' }, '')
+    const handleBack = () => {
+      window.history.pushState({ cafeq: 'admin' }, '')
+      setTab('overview')
+    }
+    window.addEventListener('popstate', handleBack)
+    return () => window.removeEventListener('popstate', handleBack)
+  }, [authed])
 
   const fetchData = useCallback(async () => {
     const { data: o } = await supabase
@@ -194,7 +225,7 @@ export default function AdminPage() {
       .select(`id, order_number, status, total_amount, convenience_fee, pickup_time, payment_method, created_at,
         users(name, phone), order_items(quantity, price_at_order, menu_items(name))`)
       .order('created_at', { ascending: false })
-      .limit(1000)
+      .limit(200)
     if (o) {
       const normalized = normalizeOrders(o as unknown[])
       const todayStr = new Date().toISOString().split('T')[0]
@@ -205,8 +236,31 @@ export default function AdminPage() {
     }
     const { data: m } = await supabase.from('menu_items').select('*').order('category').order('name')
     if (m) setMenuItems(m)
+    const { data: settings } = await supabase.from('owner_settings').select('cafe_open').limit(1).single()
+    if (settings) setCafeOpen(settings.cafe_open ?? true)
+
+    // ── Auto-generate today + tomorrow slots if missing ──
+    const istNow = new Date(Date.now() + 5.5 * 60 * 60 * 1000)
+    const todayIST = istNow.toISOString().split('T')[0]
+    const tomorrowIST = new Date(istNow.getTime() + 24 * 60 * 60 * 1000).toISOString().split('T')[0]
+    for (const d of [todayIST, tomorrowIST]) {
+      const { data: existing } = await supabase.from('time_slots').select('id').eq('date', d).limit(1)
+      if (!existing || existing.length === 0) {
+        await supabase.rpc('generate_daily_slots', { target_date: d })
+      }
+    }
+
     setLastRefresh(new Date())
   }, [])
+
+  async function toggleCafe() {
+    setTogglingCafe(true)
+    const newState = !cafeOpen
+    const { data: row } = await supabase.from('owner_settings').select('id').limit(1).single()
+    if (row) await supabase.from('owner_settings').update({ cafe_open: newState }).eq('id', row.id)
+    setCafeOpen(newState)
+    setTogglingCafe(false)
+  }
 
   useEffect(() => {
     if (!authed) return
@@ -218,10 +272,26 @@ export default function AdminPage() {
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [chatMsgs])
 
   function handlePin(digit: string) {
+    if (Date.now() < lockedUntil) { setPinErr('Too many attempts. Please wait.'); return }
     const next = pin + digit; setPin(next)
     if (next.length === 4) {
-      if (next === '9999') { sessionStorage.setItem('cafeq_owner', 'true'); setAuthed(true); setPin('') }
-      else { setPinErr('Wrong PIN'); setTimeout(() => { setPinErr(''); setPin('') }, 1200) }
+      if (next === '9999') {
+        sessionStorage.setItem('cafeq_owner', 'true')
+        sessionStorage.setItem('cafeq_owner_time', Date.now().toString())
+        setAuthed(true); setPin(''); setPinAttempts(0)
+      } else {
+        const newAttempts = pinAttempts + 1
+        setPinAttempts(newAttempts)
+        if (newAttempts >= 5) {
+          setLockedUntil(Date.now() + 30000)
+          setPinErr('Too many attempts. Locked for 30s.')
+          setTimeout(() => { setPinErr(''); setPinAttempts(0); setLockedUntil(0) }, 30000)
+        } else {
+          setPinErr(`Wrong PIN. ${5 - newAttempts} attempts left.`)
+          setTimeout(() => setPinErr(''), 2000)
+        }
+        setPin('')
+      }
     }
   }
 
@@ -235,7 +305,7 @@ export default function AdminPage() {
   const todayCash = todayOrders.filter(o => o.payment_method === 'cash').reduce((s, o) => s + o.total_amount, 0)
 
   const itemFreq: Record<string, number> = {}
-  todayOrders.forEach(o => o.order_items?.forEach(i => {
+  orders.forEach(o => o.order_items?.forEach(i => {
     const n = i.menu_items?.name || '?'; itemFreq[n] = (itemFreq[n] || 0) + i.quantity
   }))
   const topItem = Object.entries(itemFreq).sort((a, b) => b[1] - a[1])[0]
@@ -318,14 +388,17 @@ export default function AdminPage() {
   function printOrder(order: Order) {
     const subtotal = order.total_amount - (order.convenience_fee || 0)
     const win = window.open('', '_blank', 'width=400,height=600')
-    if (!win) return
+    if (!win) {
+      alert('Print blocked! Please allow popups for this site.\nChrome: Click popup blocked icon in address bar → Always allow')
+      return
+    }
     win.document.write(`<html><head><style>
       body{font-family:'Courier New',monospace;font-size:13px;width:76mm;margin:0;padding:4mm;}
       .c{text-align:center}.b{font-weight:bold}.big{font-size:22px;font-weight:900}
       .line{border-top:1px dashed #000;margin:5px 0}.row{display:flex;justify-content:space-between}
       .item{padding:3px 0;border-bottom:1px dotted #ccc}
     </style></head><body>
-    <div class="c b" style="font-size:15px">☕ CaféQ</div>
+    <div class="c b" style="font-size:15px">☕ ${APP_NAME}</div>
     <div class="line"></div>
     <div class="c big">#${order.order_number}</div>
     <div class="c b">Pickup: ${fmt(order.pickup_time)}</div>
@@ -342,21 +415,44 @@ export default function AdminPage() {
     <div class="row b" style="font-size:15px"><span>TOTAL</span><span>Rs.${order.total_amount}</span></div>
     <div>Payment: ${order.payment_method === 'cash' ? 'Pay at counter' : 'UPI'}</div>
     <div class="line"></div>
-    <div class="c" style="font-size:10px">Thank you! ☕ cafeq.app</div>
+    <div class="c" style="font-size:10px">Thank you! ☕ ${APP_TAGLINE}</div>
     </body></html>`)
     win.document.close(); win.focus()
     setTimeout(() => { win.print(); win.close() }, 400)
   }
 
   function downloadCSV(data: Order[], filename: string) {
-    const rows = [['Token', 'Customer', 'Phone', 'Items', 'Amount', 'Fee', 'Payment', 'Slot', 'Status', 'Date']]
-    data.forEach(o => rows.push([
-      o.order_number, o.users?.name, o.users?.phone,
-      o.order_items?.map(i => `${i.menu_items?.name} x${i.quantity}`).join(' + '),
-      String(o.total_amount), String(o.convenience_fee || 0),
-      o.payment_method, fmt(o.pickup_time), o.status, fmtDate(o.created_at)
-    ]))
-    const csv = rows.map(r => r.map(c => `"${c}"`).join(',')).join('\n')
+    function cell(val: any): string {
+      const str = (val === null || val === undefined) ? '' : String(val)
+      // Escape double quotes by doubling them, then wrap in quotes
+      return '"' + str.replace(/"/g, '""') + '"'
+    }
+    const headers = [
+      'Token', 'Date', 'Customer Name', 'Phone',
+      'Items', 'Subtotal (Rs.)', 'Convenience Fee (Rs.)', 'Total (Rs.)',
+      'Payment', 'Pickup Slot', 'Status'
+    ]
+    const rows = [headers]
+    data.forEach(o => {
+      const subtotal = (o.total_amount || 0) - (o.convenience_fee || 0)
+      const itemsList = o.order_items?.map(i => `${i.menu_items?.name || '?'} x${i.quantity}`).join('; ') || ''
+      const payment = o.payment_method === 'upi' ? 'UPI' : o.payment_method === 'cash' ? 'Cash' : o.payment_method || ''
+      const status = statusLabel(o.status || '')
+      rows.push([
+        cell(o.order_number),
+        cell(fmtDate(o.created_at)),
+        cell(o.users?.name),
+        cell(o.users?.phone),
+        cell(itemsList),
+        cell(subtotal),
+        cell(o.convenience_fee || 0),
+        cell(o.total_amount),
+        cell(payment),
+        cell(fmt(o.pickup_time)),
+        cell(status),
+      ])
+    })
+    const csv = rows.map(r => r.join(',')).join('\r\n')
     const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a'); a.href = url; a.download = filename; a.click()
@@ -398,7 +494,7 @@ export default function AdminPage() {
       return sum
     })()
 
-    const context = `You are a helpful business assistant for a café called CaféQ. Answer in the same language the owner uses. They may write in any Indian language including Hindi, English, Gujarati, Marathi, Tamil, Telugu, Kannada, Bengali, Punjabi, Malayalam, Odia, Urdu, or any other Indian language. Always detect the language and respond in the exact same language. Be very friendly and helpful. Keep responses concise. If the owner asks for a report or to download data, mention that a download button will appear below your message.
+    const context = `You are a helpful business assistant for a café called ${APP_NAME}. Answer in the same language the owner uses. They may write in any Indian language including Hindi, English, Gujarati, Marathi, Tamil, Telugu, Kannada, Bengali, Punjabi, Malayalam, Odia, Urdu, or any other Indian language. Always detect the language and respond in the exact same language. Be very friendly and helpful. Keep responses concise. If the owner asks for a report or to download data, mention that a download button will appear below your message.
 
 BUSINESS DATA:
 - Today's revenue: Rs.${todayRevenue} (${todayOrders.length} orders)
@@ -485,7 +581,7 @@ BUSINESS DATA:
         <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:28, padding:'0 4px' }}>
           <span style={{ fontSize:'1.4rem' }}>☕</span>
           <div>
-            <p style={{ fontWeight:900, color:'#f97316', fontSize:'1rem', lineHeight:1 }}>CaféQ</p>
+            <p style={{ fontWeight:900, color:'#f97316', fontSize:'1rem', lineHeight:1 }}>{APP_NAME}</p>
             <p style={{ color:'#9ca3af', fontSize:'0.65rem' }}>Owner Panel</p>
           </div>
         </div>
@@ -501,7 +597,7 @@ BUSINESS DATA:
           <button onClick={fetchData} className="btn-secondary" style={{ width:'100%', marginBottom:6, display:'flex', alignItems:'center', justifyContent:'center', gap:6 }}>
             <RefreshCw size={13} /> Refresh
           </button>
-          <button onClick={() => { sessionStorage.removeItem('cafeq_owner'); setAuthed(false) }}
+          <button onClick={() => { sessionStorage.removeItem('cafeq_owner'); sessionStorage.removeItem('cafeq_owner_time'); setAuthed(false) }}
             className="btn-secondary" style={{ width:'100%', color:'#ef4444', display:'flex', alignItems:'center', justifyContent:'center', gap:6 }}>
             <LogOut size={13} /> Logout
           </button>
@@ -513,7 +609,7 @@ BUSINESS DATA:
         <div style={{ display:'flex', alignItems:'center', gap:8 }}>
           <span style={{ fontSize:'1.4rem' }}>☕</span>
           <div>
-            <p style={{ fontWeight:900, color:'white', fontSize:'1rem', lineHeight:1 }}>CaféQ</p>
+            <p style={{ fontWeight:900, color:'white', fontSize:'1rem', lineHeight:1 }}>{APP_NAME}</p>
             <p style={{ color:'rgba(255,255,255,0.8)', fontSize:'0.65rem' }}>Owner Panel</p>
           </div>
         </div>
@@ -521,7 +617,7 @@ BUSINESS DATA:
           <button onClick={fetchData} style={{ background:'rgba(255,255,255,0.2)', border:'none', borderRadius:'50%', width:34, height:34, display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer' }}>
             <RefreshCw size={15} color="white" />
           </button>
-          <button onClick={() => { sessionStorage.removeItem('cafeq_owner'); setAuthed(false) }}
+          <button onClick={() => { sessionStorage.removeItem('cafeq_owner'); sessionStorage.removeItem('cafeq_owner_time'); setAuthed(false) }}
             style={{ background:'rgba(255,255,255,0.2)', border:'none', borderRadius:'50%', width:34, height:34, display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer' }}>
             <LogOut size={15} color="white" />
           </button>
@@ -534,6 +630,7 @@ BUSINESS DATA:
 
           {/* ── OVERVIEW ── */}
           {tab === 'overview' && (
+            <>
             <div style={{ animation:'fadeUp .3s ease' }}>
               <div style={{ marginBottom:20 }}>
                 <h2 style={{ fontWeight:800, fontSize:'1.4rem', color:'#1a1a1a' }}>Good day! 👋</h2>
@@ -601,6 +698,18 @@ BUSINESS DATA:
                 {todayOrders.length===0 && <p style={{ textAlign:'center', color:'#9ca3af', padding:'20px 0' }}>No orders today yet</p>}
               </div>
             </div>
+
+            <div className="card" style={{ marginTop:14, display:'flex', justifyContent:'space-between', alignItems:'center', padding:'20px 18px', border: cafeOpen ? '1.5px solid #bbf7d0' : '1.5px solid #fecaca', background: cafeOpen ? '#f0fdf4' : '#fef2f2' }}>
+              <div>
+                <p style={{ fontWeight:800, fontSize:'1rem', color:'#1a1a1a' }}>{cafeOpen ? '🟢 Cafe is Open' : '🔴 Cafe is Closed'}</p>
+                <p style={{ color:'#6b7280', fontSize:'0.78rem', marginTop:2 }}>{cafeOpen ? 'Students can place orders right now' : 'Students cannot place new orders'}</p>
+              </div>
+              <button onClick={toggleCafe} disabled={togglingCafe}
+                style={{ background: cafeOpen ? '#ef4444' : '#22c55e', color:'white', border:'none', borderRadius:12, padding:'10px 18px', fontWeight:700, fontSize:'0.88rem', cursor:'pointer', opacity: togglingCafe ? 0.6 : 1 }}>
+                {togglingCafe ? '...' : cafeOpen ? 'Close Cafe' : 'Open Cafe'}
+              </button>
+            </div>
+            </>
           )}
 
           {/* ── ORDERS ── */}
@@ -991,9 +1100,13 @@ BUSINESS DATA:
                   )}
                   <button onClick={async()=>{
                     if(newPin.length!==4||newPin!==confirmPin)return
-                    await supabase.from('owner_settings').upsert({ id:1, receptionist_pin: newPin })
-                    setPinSaved(true); setNewPin(''); setConfirmPin('')
-                    setTimeout(()=>setPinSaved(false),3000)
+                    const hashed = await bcrypt.hash(newPin, 10)
+                    const { data: row } = await supabase.from('owner_settings').select('id').limit(1).single()
+                    if (row) {
+                      await supabase.from('owner_settings').update({ password_hash: hashed }).eq('id', row.id)
+                      setPinSaved(true); setNewPin(''); setConfirmPin('')
+                      setTimeout(()=>setPinSaved(false),3000)
+                    }
                   }} className="btn-primary" disabled={newPin.length!==4||newPin!==confirmPin}
                     style={{ opacity:newPin.length===4&&newPin===confirmPin?1:0.5 }}>
                     Save New PIN
@@ -1004,6 +1117,28 @@ BUSINESS DATA:
                   <p style={{ color:'#c2410c', fontSize:'0.75rem', fontWeight:600 }}>⚠️ Staff at /worker read this PIN from the database. Default is 1234.</p>
                 </div>
               </div>
+              <div className="card" style={{ marginBottom:14 }}>
+                <p style={{ fontWeight:700, color:'#1a1a1a', marginBottom:4, fontSize:'0.95rem' }}>🔢 Token Counter Reset</p>
+                <p style={{ color:'#9ca3af', fontSize:'0.78rem', marginBottom:14 }}>Reset token to AA001. Do this every morning before opening.</p>
+                <button onClick={async () => {
+                  if (!confirm('Reset token counter to AA001? Do this at start of each day.')) return
+                  setResettingToken(true)
+                  const { data: tcRow } = await supabase.from('token_counter').select('id').limit(1).single()
+                  if (tcRow) {
+                    await supabase.from('token_counter').update({ letters: 'AA', number: 0 }).eq('id', tcRow.id)
+                    setTokenResetDone(true)
+                    setTimeout(() => setTokenResetDone(false), 3000)
+                  }
+                  setResettingToken(false)
+                }} className="btn-primary" disabled={resettingToken}>
+                  {resettingToken ? 'Resetting...' : 'Reset Token to AA001'}
+                </button>
+                {tokenResetDone && <p style={{ color:'#22c55e', fontWeight:600, fontSize:'0.82rem', marginTop:8 }}>✅ Token reset to AA001!</p>}
+                <div style={{ background:'#fefce8', borderRadius:10, padding:'10px 12px', marginTop:12 }}>
+                  <p style={{ color:'#854d0e', fontSize:'0.75rem', fontWeight:600 }}>⚠️ Only reset at start of day. Existing orders keep their old token.</p>
+                </div>
+              </div>
+
               <div className="card">
                 <p style={{ fontWeight:700, color:'#1a1a1a', marginBottom:4, fontSize:'0.95rem' }}>📋 Today's Order Activity</p>
                 <p style={{ color:'#9ca3af', fontSize:'0.78rem', marginBottom:14 }}>Summary of what was processed today</p>

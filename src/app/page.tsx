@@ -1,6 +1,7 @@
 'use client'
 import { useState, useEffect, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
+import { APP_NAME, APP_TAGLINE } from '@/lib/config'
 import { ShoppingCart, Clock, Zap, X, Send, ChevronDown, ChevronUp, Plus, Minus, Sparkles, LogOut, ClipboardList, ChevronRight, ChevronLeft } from 'lucide-react'
 
 type CustomizationOption = { name: string; choices: string[] }
@@ -25,6 +26,7 @@ function getOrderStatusInfo(status: string) {
 }
 
 export default function Home() {
+  // ── Fix: check localStorage synchronously so no orange flash ──
   const [menuItems, setMenuItems] = useState<MenuItem[]>([])
   const [cart, setCart] = useState<CartItem[]>([])
   const [activeCategory, setActiveCategory] = useState('All')
@@ -37,21 +39,40 @@ export default function Home() {
   const [slots, setSlots] = useState<TimeSlot[]>([])
   const [showSlots, setShowSlots] = useState(false)
   const [userName, setUserName] = useState('')
+  const [cafeOpen, setCafeOpen] = useState(true)
   const [activeOrders, setActiveOrders] = useState<ActiveOrder[]>([])
   const [currentOrderIdx, setCurrentOrderIdx] = useState(0)
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
-    { role: 'assistant', content: "Hi! I'm your CafeQ assistant! Ask me anything like 'What's under Rs.80?' or 'Which slots are free?' or 'What's quick to make?'" }
+    { role: 'assistant', content: `Hi! I'm your ${APP_NAME} assistant! Ask me anything like 'What's under Rs.80?' or 'Which slots are free?' or 'What's quick to make?'` }
   ])
   const [chatInput, setChatInput] = useState('')
   const [aiLoading, setAiLoading] = useState(false)
   const chatEndRef = useRef<HTMLDivElement>(null)
   const userRef = useRef<any>(null)
   const touchStartX = useRef<number>(0)
+  const fetchMenuRef = useRef<(force?: boolean) => Promise<void>>(() => Promise.resolve())
+  const fetchCafeStatusRef = useRef<() => Promise<void>>(() => Promise.resolve())
 
   useEffect(() => {
+    // ── Fast check: if user in localStorage, hide loading immediately ──
+    if (localStorage.getItem('cafeq_user')) setLoading(false)
+
+    // ── Clear stale empty cache on every fresh load ──
+    const cachedMenu = sessionStorage.getItem('cafeq_menu_cache')
+    if (cachedMenu) {
+      try {
+        const parsed = JSON.parse(cachedMenu)
+        if (!Array.isArray(parsed) || parsed.length === 0) {
+          sessionStorage.removeItem('cafeq_menu_cache')
+          sessionStorage.removeItem('cafeq_menu_cache_time')
+        }
+      } catch {
+        sessionStorage.removeItem('cafeq_menu_cache')
+        sessionStorage.removeItem('cafeq_menu_cache_time')
+      }
+    }
+
     let interval: any = null
-    let orderSub: any = null
-    let slotSub: any = null
 
     async function init() {
       const saved = localStorage.getItem('cafeq_user')
@@ -63,6 +84,7 @@ export default function Home() {
         fetchMenu()
         fetchSlots()
         fetchActiveOrders(u)
+        fetchCafeStatus()
       } else {
         const { data: { session } } = await supabase.auth.getSession()
         if (session?.user) {
@@ -77,21 +99,10 @@ export default function Home() {
             fetchMenu()
             fetchSlots()
             fetchActiveOrders(u)
+            fetchCafeStatus()
           } else { window.location.href = '/login'; return }
         } else { window.location.href = '/login'; return }
       }
-
-      orderSub = supabase
-        .channel('orders-changes')
-        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'orders' },
-          () => { if (userRef.current) fetchActiveOrders(userRef.current) })
-        .subscribe()
-
-      slotSub = supabase
-        .channel('slots-changes')
-        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'time_slots' },
-          () => { fetchSlots() })
-        .subscribe()
 
       interval = setInterval(() => {
         if (userRef.current) fetchActiveOrders(userRef.current)
@@ -100,33 +111,118 @@ export default function Home() {
     }
 
     init()
+
+    // ── All realtime subs declared here at top level so React cleanup works ──
+    const orderSub = supabase
+      .channel('orders-changes')
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'orders' },
+        () => { if (userRef.current) fetchActiveOrders(userRef.current) })
+      .subscribe()
+
+    const slotSub = supabase
+      .channel('slots-changes')
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'time_slots' },
+        () => { fetchSlots() })
+      .subscribe()
+
+    const menuSub = supabase
+      .channel('menu-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'menu_items' },
+        () => {
+          sessionStorage.removeItem('cafeq_menu_cache')
+          sessionStorage.removeItem('cafeq_menu_cache_time')
+          fetchMenuRef.current(true)
+        })
+      .subscribe()
+
+    const cafeStatusSub = supabase
+      .channel('cafe-status-changes')
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'owner_settings' },
+        () => { fetchCafeStatusRef.current() })
+      .subscribe()
+
     return () => {
       if (interval) clearInterval(interval)
-      if (orderSub) supabase.removeChannel(orderSub)
-      if (slotSub) supabase.removeChannel(slotSub)
+      supabase.removeChannel(orderSub)
+      supabase.removeChannel(slotSub)
+      supabase.removeChannel(menuSub)
+      supabase.removeChannel(cafeStatusSub)
     }
   }, [])
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [chatMessages])
 
-  async function fetchMenu() {
-    const { data } = await supabase.from('menu_items').select('*').eq('is_available', true)
-    if (data) setMenuItems(data)
+  async function fetchMenu(force = false) {
+    fetchMenuRef.current = fetchMenu
+    const CACHE_KEY = 'cafeq_menu_cache'
+    const CACHE_TIME_KEY = 'cafeq_menu_cache_time'
+    const FIVE_MINS = 5 * 60 * 1000
+    if (!force) {
+      const cached = sessionStorage.getItem(CACHE_KEY)
+      const cachedTime = sessionStorage.getItem(CACHE_TIME_KEY)
+      if (cached && cachedTime && Date.now() - parseInt(cachedTime) < FIVE_MINS) {
+        try {
+          const parsed = JSON.parse(cached)
+          // ── Only use cache if it has actual items ──
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setMenuItems(parsed)
+            return
+          }
+        } catch {}
+      }
+    }
+    try {
+      const { data, error } = await supabase.from('menu_items').select('*').eq('is_available', true)
+      if (error) throw error
+      if (data) {
+        setMenuItems(data)
+        sessionStorage.setItem(CACHE_KEY, JSON.stringify(data))
+        sessionStorage.setItem(CACHE_TIME_KEY, Date.now().toString())
+      }
+    } catch (err) {
+      console.error('Menu fetch failed:', err)
+      // ── Try fetching without filter as fallback ──
+      try {
+        const { data } = await supabase.from('menu_items').select('*')
+        if (data && data.length > 0) {
+          const available = data.filter(d => d.is_available)
+          setMenuItems(available.length > 0 ? available : data)
+        }
+      } catch {
+        // Last resort: load stale cache
+        const cached = sessionStorage.getItem(CACHE_KEY)
+        if (cached) { try { setMenuItems(JSON.parse(cached)) } catch {} }
+      }
+    }
+  }
+
+  async function fetchCafeStatus() {
+    fetchCafeStatusRef.current = fetchCafeStatus
+    try {
+      const { data } = await supabase.from('owner_settings').select('cafe_open').limit(1).single()
+      if (data) setCafeOpen(data.cafe_open ?? true)
+    } catch { setCafeOpen(true) }
   }
 
   async function fetchSlots() {
-    const today = new Date().toISOString().split('T')[0]
-    const { data: existing } = await supabase.from('time_slots').select('id').eq('date', today).limit(1)
-    if (!existing || existing.length === 0) {
-      await supabase.rpc('generate_daily_slots', { target_date: today })
+    try {
+      const today = new Date(Date.now() + 5.5 * 60 * 60 * 1000).toISOString().split('T')[0]
+      const { data: existing } = await supabase.from('time_slots').select('id').eq('date', today).limit(1)
+      if (!existing || existing.length === 0) {
+        await supabase.rpc('generate_daily_slots', { target_date: today })
+      }
+      const { data } = await supabase.from('time_slots').select('*').eq('date', today).order('slot_time')
+      if (data) setSlots(data)
+    } catch (err) {
+      console.error('Slots fetch failed:', err)
     }
-    const { data } = await supabase.from('time_slots').select('*').eq('date', today).order('slot_time')
-    if (data) setSlots(data)
   }
 
   async function fetchActiveOrders(user: any) {
     try {
-      const { data: userRecord } = await supabase.from('users').select('id').eq('email', user.email).single()
+      const lookupKey = user.phone || user.email
+      const lookupField = user.phone ? 'phone' : 'email'
+      const { data: userRecord } = await supabase.from('users').select('id').eq(lookupField, lookupKey).maybeSingle()
       if (!userRecord) { setActiveOrders([]); return }
       const { data } = await supabase
         .from('orders').select('id, order_number, status, pickup_time, updated_at')
@@ -134,11 +230,16 @@ export default function Home() {
         .in('status', ['pending', 'preparing', 'ready'])
         .order('created_at', { ascending: false })
 
-      // ── Auto-clear ready orders after 5 minutes
       const fiveMinsAgo = new Date(Date.now() - 5 * 60 * 1000)
+      const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000)
       const filtered = (data || []).filter((o: any) => {
+        // Remove ready orders after 5 minutes
         if (o.status === 'ready') {
           return o.updated_at ? new Date(o.updated_at) > fiveMinsAgo : true
+        }
+        // Remove stale pending/preparing orders older than 24 hours
+        if (o.status === 'pending' || o.status === 'preparing') {
+          return o.updated_at ? new Date(o.updated_at) > twentyFourHoursAgo : true
         }
         return true
       })
@@ -210,6 +311,10 @@ export default function Home() {
   }
 
   function goToCheckout() {
+    if (!cafeOpen) {
+      alert('The cafe is currently closed. Please try again later.')
+      return
+    }
     localStorage.setItem('cafeq_cart', JSON.stringify(cart))
     window.location.href = '/checkout'
   }
@@ -218,6 +323,8 @@ export default function Home() {
     await supabase.auth.signOut()
     localStorage.removeItem('cafeq_user')
     localStorage.removeItem('cafeq_cart')
+    sessionStorage.removeItem('cafeq_menu_cache')
+    sessionStorage.removeItem('cafeq_menu_cache_time')
     window.location.href = '/login'
   }
 
@@ -272,7 +379,7 @@ export default function Home() {
     <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f97316' }}>
       <div style={{ textAlign: 'center' }}>
         <div style={{ fontSize: '3rem', marginBottom: '12px' }}>☕</div>
-        <p style={{ color: 'white', fontWeight: 800, fontSize: '1.5rem' }}>CaféQ</p>
+        <p style={{ color: 'white', fontWeight: 800, fontSize: '1.5rem' }}>{APP_NAME}</p>
       </div>
     </div>
   )
@@ -301,8 +408,8 @@ export default function Home() {
           <div className="flex items-center gap-3">
             <span style={{ fontSize: '1.8rem' }}>☕</span>
             <div>
-              <h1 style={{ fontSize: '1.9rem', fontWeight: 800, color: 'white', letterSpacing: '-0.02em', lineHeight: 1 }}>CaféQ</h1>
-              <p style={{ color: 'rgba(255,255,255,0.8)', fontSize: '0.7rem', fontWeight: 500 }}>Hey {userName.split(' ')[0]}! 👋</p>
+              <h1 style={{ fontSize: '1.9rem', fontWeight: 800, color: 'white', letterSpacing: '-0.02em', lineHeight: 1 }}>{APP_NAME}</h1>
+              <p style={{ color: 'rgba(255,255,255,0.8)', fontSize: '0.7rem', fontWeight: 500 }}>{APP_TAGLINE} · Hey {userName.split(' ')[0]}! 👋</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -340,15 +447,13 @@ export default function Home() {
         </div>
       </div>
 
-      {/* ── FLOATING CART OVERLAY — hovers over everything, dismissable ── */}
+      {/* FLOATING CART OVERLAY */}
       {showCart && (
         <>
-          {/* Backdrop */}
           <div onClick={() => setShowCart(false)}
             style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.25)', zIndex: 50, backdropFilter: 'blur(2px)' }} />
-          {/* Cart panel — fixed below header */}
           <div style={{ position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 51, padding: '0', animation: 'cartSlide 0.2s ease forwards' }}>
-            <div style={{ background: 'white', borderRadius: '20px', boxShadow: '0 12px 40px rgba(0,0,0,0.18)', border: '1px solid #fed7aa', maxHeight: 'calc(100vh - 120px)', overflowY: 'auto' }}>
+            <div style={{ background: 'white', borderRadius: '20px 20px 0 0', boxShadow: '0 12px 40px rgba(0,0,0,0.18)', border: '1px solid #fed7aa', maxHeight: 'calc(100vh - 120px)', overflowY: 'auto' }}>
               <div style={{ padding: '16px 16px 0' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
                   <h2 style={{ fontWeight: 700, fontSize: '1.1rem', color: '#1a1a1a' }}>🛒 Your Order</h2>
@@ -452,6 +557,7 @@ export default function Home() {
             )}
           </div>
         ) : (
+          /* SLOTS — always visible when no active orders */
           <div className="bg-white rounded-2xl p-4 mb-4" style={{ border: '1px solid #f0ede8' }}>
             <button onClick={() => setShowSlots(!showSlots)} className="w-full flex justify-between items-center">
               <div className="flex items-center gap-2">
@@ -483,6 +589,17 @@ export default function Home() {
           </div>
         )}
 
+        {/* CAFE CLOSED BANNER */}
+        {!cafeOpen && (
+          <div style={{ background: '#fef2f2', border: '1.5px solid #fecaca', borderRadius: 16, padding: '14px 16px', marginBottom: 16, display: 'flex', alignItems: 'center', gap: 12 }}>
+            <span style={{ fontSize: '1.4rem' }}>🔴</span>
+            <div>
+              <p style={{ fontWeight: 800, color: '#dc2626', fontSize: '0.95rem' }}>Cafe is Closed</p>
+              <p style={{ color: '#9ca3af', fontSize: '0.78rem', marginTop: 2 }}>Orders are not being accepted right now. Please check back later.</p>
+            </div>
+          </div>
+        )}
+
         {/* CATEGORIES */}
         <div className="flex gap-2 overflow-x-auto pb-2 mb-4" style={{ scrollbarWidth: 'none' }}>
           {categories.map(cat => (
@@ -494,44 +611,55 @@ export default function Home() {
         </div>
 
         {/* MENU ITEMS */}
-        <div className="grid grid-cols-1 gap-3">
-          {filtered.map(item => {
-            const inCart = cart.filter(i => i.id === item.id).reduce((sum, i) => sum + i.quantity, 0)
-            return (
-              <div key={item.id} className="menu-card bg-white rounded-2xl p-4 flex justify-between items-center" style={{ border: '1px solid #f0ede8' }}>
-                <div className="flex-1 pr-3">
-                  <div className="flex items-center gap-2 mb-1 flex-wrap">
-                    <h3 className="font-semibold text-gray-900">{item.name}</h3>
-                    {item.prep_time_minutes <= 3 && (
-                      <span style={{ background: '#e8f5e9', color: '#2e7d32', fontSize: '0.68rem', padding: '2px 7px', borderRadius: '50px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '2px' }}>
-                        <Zap size={9} /> Quick
-                      </span>
-                    )}
-                    {item.customizations?.options?.length ? (
-                      <span style={{ background: '#eff6ff', color: '#1d4ed8', fontSize: '0.68rem', padding: '2px 7px', borderRadius: '50px', fontWeight: 600 }}>Customisable</span>
-                    ) : null}
-                  </div>
-                  <p className="text-gray-400 text-sm mb-2">{item.description}</p>
-                  <div className="flex items-center gap-3">
-                    <span className="font-bold" style={{ color: '#f97316', fontSize: '1.1rem' }}>Rs.{item.price}</span>
-                    <span className="text-gray-300 text-xs flex items-center gap-1"><Clock size={11} />{item.prep_time_minutes} min</span>
-                  </div>
-                </div>
-                <div className="flex-shrink-0">
-                  {inCart > 0 ? (
-                    <div className="flex items-center gap-2 rounded-2xl px-2 py-1" style={{ border: '1.5px solid #fed7aa', background: '#fff7ed' }}>
-                      <button className="btn-scale w-8 h-8 rounded-full flex items-center justify-center" style={{ background: '#fff3ed', color: '#f97316' }} onClick={() => removeFromCartSimple(item.id)}><Minus size={14} /></button>
-                      <span className="font-bold text-gray-800 w-5 text-center">{inCart}</span>
-                      <button className="btn-scale w-8 h-8 rounded-full flex items-center justify-center" style={{ background: '#f97316', color: 'white' }} onClick={() => openCustomization(item)}><Plus size={14} /></button>
+        {menuItems.length === 0 ? (
+          <div style={{ textAlign: 'center', padding: '40px 20px' }}>
+            <div style={{ fontSize: '2.5rem', marginBottom: 12 }}>🍽️</div>
+            <p style={{ color: '#9ca3af', fontWeight: 600 }}>Loading menu...</p>
+            <button onClick={() => fetchMenu(true)}
+              style={{ marginTop: 12, background: '#f97316', color: 'white', border: 'none', borderRadius: 12, padding: '10px 20px', fontWeight: 700, cursor: 'pointer', fontSize: '0.9rem' }}>
+              Tap to Reload
+            </button>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-3">
+            {filtered.map(item => {
+              const inCart = cart.filter(i => i.id === item.id).reduce((sum, i) => sum + i.quantity, 0)
+              return (
+                <div key={item.id} className="menu-card bg-white rounded-2xl p-4 flex justify-between items-center" style={{ border: '1px solid #f0ede8' }}>
+                  <div className="flex-1 pr-3">
+                    <div className="flex items-center gap-2 mb-1 flex-wrap">
+                      <h3 className="font-semibold text-gray-900">{item.name}</h3>
+                      {item.prep_time_minutes <= 3 && (
+                        <span style={{ background: '#e8f5e9', color: '#2e7d32', fontSize: '0.68rem', padding: '2px 7px', borderRadius: '50px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '2px' }}>
+                          <Zap size={9} /> Quick
+                        </span>
+                      )}
+                      {item.customizations?.options?.length ? (
+                        <span style={{ background: '#eff6ff', color: '#1d4ed8', fontSize: '0.68rem', padding: '2px 7px', borderRadius: '50px', fontWeight: 600 }}>Customisable</span>
+                      ) : null}
                     </div>
-                  ) : (
-                    <button onClick={() => openCustomization(item)} className="btn-scale text-white font-semibold px-4 py-2 rounded-xl text-sm" style={{ background: '#f97316', boxShadow: '0 2px 8px rgba(249,115,22,0.3)' }}>Add</button>
-                  )}
+                    <p className="text-gray-400 text-sm mb-2">{item.description}</p>
+                    <div className="flex items-center gap-3">
+                      <span className="font-bold" style={{ color: '#f97316', fontSize: '1.1rem' }}>Rs.{item.price}</span>
+                      <span className="text-gray-300 text-xs flex items-center gap-1"><Clock size={11} />{item.prep_time_minutes} min</span>
+                    </div>
+                  </div>
+                  <div className="flex-shrink-0">
+                    {inCart > 0 ? (
+                      <div className="flex items-center gap-2 rounded-2xl px-2 py-1" style={{ border: '1.5px solid #fed7aa', background: '#fff7ed' }}>
+                        <button className="btn-scale w-8 h-8 rounded-full flex items-center justify-center" style={{ background: '#fff3ed', color: '#f97316' }} onClick={() => removeFromCartSimple(item.id)}><Minus size={14} /></button>
+                        <span className="font-bold text-gray-800 w-5 text-center">{inCart}</span>
+                        <button className="btn-scale w-8 h-8 rounded-full flex items-center justify-center" style={{ background: '#f97316', color: 'white' }} onClick={() => openCustomization(item)}><Plus size={14} /></button>
+                      </div>
+                    ) : (
+                      <button onClick={() => openCustomization(item)} className="btn-scale text-white font-semibold px-4 py-2 rounded-xl text-sm" style={{ background: '#f97316', boxShadow: '0 2px 8px rgba(249,115,22,0.3)' }}>Add</button>
+                    )}
+                  </div>
                 </div>
-              </div>
-            )
-          })}
-        </div>
+              )
+            })}
+          </div>
+        )}
       </div>
 
       {/* CUSTOMIZATION MODAL */}
@@ -583,7 +711,7 @@ export default function Home() {
             <div className="flex items-center gap-3">
               <div className="w-9 h-9 rounded-full flex items-center justify-center" style={{ background: 'rgba(255,255,255,0.2)' }}><Sparkles size={18} color="white" /></div>
               <div>
-                <p className="font-bold text-white">CaféQ Assistant</p>
+                <p className="font-bold text-white">{APP_NAME} Assistant</p>
                 <p style={{ color: 'rgba(255,255,255,0.8)', fontSize: '0.7rem' }}>Powered by Llama 3.3 · Free AI</p>
               </div>
             </div>

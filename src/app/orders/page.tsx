@@ -38,12 +38,18 @@ function getStatusBadge(status: string) {
   }
 }
 
+function toUTC(iso: string) { return iso.includes('Z') || iso.includes('+') ? iso : iso.replace(' ', 'T') + 'Z' }
+
 function formatTime(iso: string) {
-  return new Date(iso).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+  return new Date(toUTC(iso)).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' })
 }
 
 function formatPickup(iso: string) {
-  return new Date(iso).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
+  return new Date(toUTC(iso)).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' })
+}
+
+function istDate() {
+  return new Date(Date.now() + 5.5 * 60 * 60 * 1000).toISOString().split('T')[0]
 }
 
 export default function OrdersPage() {
@@ -64,7 +70,9 @@ export default function OrdersPage() {
     const userStr = localStorage.getItem('cafeq_user')
     if (!userStr) return
     const user = JSON.parse(userStr)
-    const { data: userRecord } = await supabase.from('users').select('id').eq('email', user.email).single()
+    const lookupKey = user.phone || user.email
+    const lookupField = user.phone ? 'phone' : 'email'
+    const { data: userRecord } = await supabase.from('users').select('id').eq(lookupField, lookupKey).maybeSingle()
     if (!userRecord) { setLoading(false); return }
     const { data } = await supabase
       .from('orders')
@@ -76,8 +84,51 @@ export default function OrdersPage() {
     setRefreshing(false)
   }
 
-  const activeOrders = orders.filter(o => o.status !== 'completed')
-  const pastOrders = orders.filter(o => o.status === 'completed')
+  async function cancelOrder(orderId: string) {
+    if (!confirm('Cancel this order? This cannot be undone.')) return
+    const order = orders.find(o => o.id === orderId)
+    if (!order || order.status !== 'pending') {
+      alert('This order cannot be cancelled anymore.')
+      return
+    }
+    const { data, error } = await supabase
+      .from('orders')
+      .update({ status: 'cancelled' })
+      .eq('id', orderId)
+      .eq('status', 'pending')
+      .select('id')
+    if (error) {
+      alert('Could not cancel order right now. Please try again.')
+      return
+    }
+    if (!data || data.length === 0) {
+      alert('This order can no longer be cancelled.')
+      return
+    }
+    // Decrement slot count so the slot opens up for other students
+    try {
+      const today = istDate()
+      const pickupDate = new Date(new Date(order.pickup_time).getTime() + 5.5 * 60 * 60 * 1000).toISOString().split('T')[0]
+      if (pickupDate === today) {
+        const slotTime = new Date(order.pickup_time).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true, timeZone: 'Asia/Kolkata' }).toUpperCase()
+        const { data: slotRow } = await supabase
+          .from('time_slots')
+          .select('id, current_orders')
+          .eq('date', today)
+          .eq('slot_time', slotTime)
+          .maybeSingle()
+        if (slotRow && slotRow.current_orders > 0) {
+          await supabase.from('time_slots')
+            .update({ current_orders: slotRow.current_orders - 1 })
+            .eq('id', slotRow.id)
+        }
+      }
+    } catch { /* slot decrement is best-effort */ }
+    fetchOrders()
+  }
+
+  const activeOrders = orders.filter(o => o.status !== 'completed' && o.status !== 'cancelled')
+  const pastOrders = orders.filter(o => o.status === 'completed' || o.status === 'cancelled')
 
   if (loading) return (
     <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8f7f4' }}>
@@ -154,7 +205,6 @@ export default function OrdersPage() {
                         <div style={{ display: 'flex', alignItems: 'center' }}>
                           {STEPS.map((s, i) => (
                             <div key={s.key} style={{ display: 'flex', alignItems: 'center', flex: i < STEPS.length - 1 ? 1 : 'none' }}>
-                              {/* Step circle */}
                               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '6px' }}>
                                 <div style={{
                                   width: '40px', height: '40px', borderRadius: '50%',
@@ -170,7 +220,6 @@ export default function OrdersPage() {
                                   {s.label}
                                 </span>
                               </div>
-                              {/* Connector line */}
                               {i < STEPS.length - 1 && (
                                 <div style={{ flex: 1, height: '3px', margin: '0 6px', marginBottom: '18px', borderRadius: '4px', background: step > i ? '#f97316' : '#f3f4f6', transition: 'background 0.4s ease' }} />
                               )}
@@ -188,10 +237,18 @@ export default function OrdersPage() {
                           </div>
                           <span style={{ fontWeight: 800, color: '#f97316', fontSize: '1rem' }}>Rs.{order.total_amount}</span>
                         </div>
-                        <button onClick={() => setExpanded(isExp ? null : order.id)}
-                          style={{ marginTop: '8px', color: '#f97316', fontWeight: 600, fontSize: '0.82rem', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
-                          {isExp ? '▲ Hide items' : '▼ View items'}
-                        </button>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 8 }}>
+                          <button onClick={() => setExpanded(isExp ? null : order.id)}
+                            style={{ color: '#f97316', fontWeight: 600, fontSize: '0.82rem', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}>
+                            {isExp ? '▲ Hide items' : '▼ View items'}
+                          </button>
+                          {order.status === 'pending' && (
+                            <button onClick={() => cancelOrder(order.id)}
+                              style={{ color: '#ef4444', fontWeight: 600, fontSize: '0.78rem', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '3px 10px', cursor: 'pointer' }}>
+                              ✕ Cancel
+                            </button>
+                          )}
+                        </div>
                         {isExp && (
                           <div style={{ marginTop: '10px', background: '#f8f7f4', borderRadius: '12px', padding: '10px 12px' }}>
                             {order.order_items.map((item, i) => (

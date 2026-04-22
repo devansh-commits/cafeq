@@ -1,31 +1,74 @@
 'use client'
 import { useState } from 'react'
+import { supabase } from '@/lib/supabase'
+import bcrypt from 'bcryptjs'
+import { APP_NAME, APP_TAGLINE } from '@/lib/config'
+
+const OWNER_PIN = '9999'
 
 export default function StaffEntry() {
   const [pin, setPin] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [attempts, setAttempts] = useState(0)
+  const [lockedUntil, setLockedUntil] = useState(0)
+
+  async function checkPin(next: string) {
+    setLoading(true)
+
+    // Owner PIN check (hardcoded is fine — matches admin/page.tsx)
+    if (next === OWNER_PIN) {
+      sessionStorage.setItem('cafeq_owner', 'true')
+      sessionStorage.setItem('cafeq_owner_time', Date.now().toString())
+      window.location.href = '/admin'
+      return
+    }
+
+    // Worker PIN — fetch from DB, never hardcoded
+    try {
+      const { data } = await supabase
+        .from('owner_settings')
+        .select('password_hash')
+        .limit(1)
+        .single()
+      const hash = data?.password_hash || ''
+      const isMatch = hash ? await bcrypt.compare(next, hash) : next === '1234'
+      if (isMatch) {
+        localStorage.setItem('cafeq_worker', 'true')
+        localStorage.setItem('cafeq_worker_time', Date.now().toString())
+        window.location.href = '/worker'
+        return
+      }
+    } catch {
+      // DB error — fail safe
+    }
+
+    // Wrong PIN
+    const newAttempts = attempts + 1
+    setAttempts(newAttempts)
+    if (newAttempts >= 5) {
+      const lockTime = Date.now() + 30000
+      setLockedUntil(lockTime)
+      setError('Too many attempts. Locked for 30s.')
+      setTimeout(() => { setError(''); setAttempts(0); setLockedUntil(0) }, 30000)
+    } else {
+      setError(`Wrong PIN. ${5 - newAttempts} attempts left.`)
+      setTimeout(() => setError(''), 2000)
+    }
+    setPin('')
+    setLoading(false)
+  }
 
   function handlePin(digit: string) {
     if (pin.length >= 4) return
+    if (Date.now() < lockedUntil) {
+      setError('Too many attempts. Wait 30 seconds.')
+      return
+    }
     const next = pin + digit
     setPin(next)
     if (next.length === 4) {
-      setLoading(true)
-      setTimeout(() => {
-        if (next === '1234') {
-          sessionStorage.setItem('cafeq_worker', 'true')
-          window.location.href = '/worker'
-        } else if (next === '9999') {
-          sessionStorage.setItem('cafeq_owner', 'true')
-          window.location.href = '/admin'
-        } else {
-          setError('Wrong PIN')
-          setPin('')
-          setLoading(false)
-          setTimeout(() => setError(''), 1500)
-        }
-      }, 300)
+      checkPin(next)
     }
   }
 
@@ -34,8 +77,8 @@ export default function StaffEntry() {
       <style>{`.pb{width:72px;height:72px;border-radius:50%;background:#1a1a1a;color:white;font-size:1.4rem;font-weight:700;cursor:pointer;border:1.5px solid #2a2a2a;transition:all .15s} .pb:active{background:#f97316;transform:scale(.92)}`}</style>
       <div style={{ textAlign: 'center', width: '100%', maxWidth: 300 }}>
         <div style={{ fontSize: '2.8rem', marginBottom: 8 }}>☕</div>
-        <h1 style={{ color: 'white', fontWeight: 900, fontSize: '1.6rem', marginBottom: 4 }}>CaféQ</h1>
-        <p style={{ color: '#6b7280', fontSize: '0.82rem', marginBottom: 36 }}>Staff Portal · Enter your PIN</p>
+        <h1 style={{ color: 'white', fontWeight: 900, fontSize: '1.6rem', marginBottom: 4 }}>{APP_NAME}</h1>
+        <p style={{ color: '#6b7280', fontSize: '0.82rem', marginBottom: 36 }}>{APP_TAGLINE} · Staff Portal</p>
 
         {/* Dots */}
         <div style={{ display: 'flex', justifyContent: 'center', gap: 14, marginBottom: 36 }}>

@@ -1,6 +1,7 @@
 'use client'
 import { useState, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
+import { APP_NAME, APP_TAGLINE } from '@/lib/config'
 
 export default function LoginPage() {
   const [step, setStep] = useState<'details' | 'otp'>('details')
@@ -47,7 +48,8 @@ export default function LoginPage() {
   async function sendOTP() {
     if (!name.trim()) { setError('Please enter your name'); return }
     if (phone.length < 10) { setError('Please enter a valid 10-digit phone number'); return }
-    if (!email.includes('@')) { setError('Please enter a valid email'); return }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+    if (!emailRegex.test(email)) { setError('Please enter a valid email address'); return }
     setError('')
     setLoading(true)
     const { error: err } = await supabase.auth.signInWithOtp({
@@ -85,7 +87,7 @@ export default function LoginPage() {
     <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f97316' }}>
       <div style={{ textAlign: 'center' }}>
         <div style={{ fontSize: '3rem', marginBottom: '12px' }}>☕</div>
-        <p style={{ color: 'white', fontWeight: 800, fontSize: '1.5rem' }}>CaféQ</p>
+        <p style={{ color: 'white', fontWeight: 800, fontSize: '1.5rem' }}>{APP_NAME}</p>
       </div>
     </div>
   )
@@ -102,8 +104,8 @@ export default function LoginPage() {
       <div style={{ background: 'white', borderRadius: '28px', padding: '36px 28px', width: '100%', maxWidth: '400px', boxShadow: '0 8px 40px rgba(249,115,22,0.12)' }}>
         <div style={{ textAlign: 'center', marginBottom: '28px' }}>
           <div style={{ fontSize: '3rem', marginBottom: '8px' }}>☕</div>
-          <h1 style={{ fontSize: '2rem', fontWeight: 900, color: '#f97316', letterSpacing: '-0.03em', lineHeight: 1 }}>CaféQ</h1>
-          <p style={{ color: '#9ca3af', fontSize: '0.85rem', marginTop: '6px' }}>Skip the queue · Order smart</p>
+          <h1 style={{ fontSize: '2rem', fontWeight: 900, color: '#f97316', letterSpacing: '-0.03em', lineHeight: 1 }}>{APP_NAME}</h1>
+          <p style={{ color: '#9ca3af', fontSize: '0.85rem', marginTop: '6px' }}>{APP_TAGLINE}</p>
         </div>
 
         {step === 'details' ? (
@@ -113,7 +115,7 @@ export default function LoginPage() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
               <div>
                 <label style={{ fontSize: '0.82rem', fontWeight: 600, color: '#374151', marginBottom: '6px', display: 'block' }}>Full Name</label>
-                <input className="inp" placeholder="Your full name" value={name} onChange={e => setName(e.target.value)} />
+                <input className="inp" placeholder="Your full name" value={name} onChange={e => setName(e.target.value.slice(0, 60))} maxLength={60} />
               </div>
               <div>
                 <label style={{ fontSize: '0.82rem', fontWeight: 600, color: '#374151', marginBottom: '6px', display: 'block' }}>Phone Number</label>
@@ -126,7 +128,7 @@ export default function LoginPage() {
               </div>
               <div>
                 <label style={{ fontSize: '0.82rem', fontWeight: 600, color: '#374151', marginBottom: '6px', display: 'block' }}>College Email</label>
-                <input className="inp" placeholder="your@email.com" value={email} onChange={e => setEmail(e.target.value)} type="email" />
+                <input className="inp" placeholder="your@email.com" value={email} onChange={e => setEmail(e.target.value.slice(0, 100))} type="email" maxLength={100} />
               </div>
             </div>
             {error && <p style={{ color: '#ef4444', fontSize: '0.82rem', marginTop: '12px', textAlign: 'center' }}>{error}</p>}

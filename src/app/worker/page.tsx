@@ -1,6 +1,8 @@
 'use client'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { supabase } from '@/lib/supabase'
+import bcrypt from 'bcryptjs'
+import { APP_NAME, APP_TAGLINE } from '@/lib/config'
 import { LogOut, Printer, Bell, ChevronLeft, ChevronRight } from 'lucide-react'
 
 const OWNER_PIN = '9999'
@@ -30,8 +32,12 @@ function slotTimeToMinutes(slotStr: string): number {
 }
 
 function matchToSlot(isoTime: string, slots: SlotInfo[]): string {
-  const d = new Date(isoTime)
-  const orderMins = d.getHours() * 60 + d.getMinutes()
+  // Supabase returns timestamps without Z — force UTC parsing
+  const normalized = isoTime.includes('Z') || isoTime.includes('+') ? isoTime : isoTime.replace(' ', 'T') + 'Z'
+  const utcMs = new Date(normalized).getTime()
+  const istMs = utcMs + (5.5 * 60 * 60 * 1000)
+  const istDate = new Date(istMs)
+  const orderMins = istDate.getUTCHours() * 60 + istDate.getUTCMinutes()
   let best = slots[0]?.slot_time || ''
   let bestDiff = Infinity
   slots.forEach(s => {
@@ -61,7 +67,10 @@ function playAlert() {
 function printSlip(order: Order, autoPrint = false) {
   const subtotal = order.total_amount - (order.convenience_fee || 0)
   const win = window.open('', '_blank', 'width=320,height=650')
-  if (!win) return
+  if (!win) {
+    alert('Print blocked! Please allow popups for this site.\nChrome: Click popup blocked icon in address bar → Always allow')
+    return
+  }
   win.document.write(`<html><head>
   <style>
     @page{margin:0;size:80mm auto}
@@ -71,11 +80,11 @@ function printSlip(order: Order, autoPrint = false) {
     .row{display:flex;justify-content:space-between}
     .item{padding:3px 0;border-bottom:1px dotted #ccc}
   </style></head><body>
-  <div class="c b" style="font-size:16px">☕ CaféQ</div>
-  <div class="c" style="font-size:10px">Skip the queue · Order smart</div>
+  <div class="c b" style="font-size:16px">☕ ${APP_NAME}</div>
+  <div class="c" style="font-size:10px">${APP_TAGLINE}</div>
   <div class="line"></div>
   <div class="c big">#${order.order_number}</div>
-  <div class="c b" style="font-size:14px">Pickup: ${order.pickup_time ? new Date(order.pickup_time).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }) : ''}</div>
+  <div class="c b" style="font-size:14px">Pickup: ${order.pickup_time ? new Date(order.pickup_time).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }) : ''}</div>
   <div class="line"></div>
   <div class="b">Customer: ${order.users?.name || ''}</div>
   <div>Phone: ${order.users?.phone || ''}</div>
@@ -104,6 +113,8 @@ export default function WorkerPage() {
   const [pin, setPin] = useState('')
   const [loggedIn, setLoggedIn] = useState(false)
   const [pinError, setPinError] = useState('')
+  const [pinAttempts, setPinAttempts] = useState(0)
+  const [lockedUntil, setLockedUntil] = useState(0)
   const [allSlots, setAllSlots] = useState<SlotInfo[]>([])
   const [ordersBySlot, setOrdersBySlot] = useState<Record<string, Order[]>>({})
   const [activeSlot, setActiveSlot] = useState<string | null>(null)
@@ -119,7 +130,16 @@ export default function WorkerPage() {
   const slotsRef = useRef<SlotInfo[]>([])
 
   useEffect(() => {
-    if (sessionStorage.getItem('cafeq_worker') === 'true') setLoggedIn(true)
+    const isWorker = localStorage.getItem('cafeq_worker') === 'true'
+    const loginTime = localStorage.getItem('cafeq_worker_time')
+    const TWELVE_HOURS = 12 * 60 * 60 * 1000
+    if (isWorker && loginTime && Date.now() - parseInt(loginTime) < TWELVE_HOURS) {
+      setLoggedIn(true)
+    } else {
+      // Session expired or missing — clear and force re-login
+      localStorage.removeItem('cafeq_worker')
+      localStorage.removeItem('cafeq_worker_time')
+    }
   }, [])
 
   const fetchAll = useCallback(async () => {
@@ -208,21 +228,38 @@ export default function WorkerPage() {
         await supabase.from('time_slots')
           .update({ current_orders: slotInfo.current_orders - 1 })
           .eq('slot_time', activeSlot)
-          .eq('date', new Date().toISOString().split('T')[0])
+          .eq('date', new Date(Date.now() + 5.5 * 60 * 60 * 1000).toISOString().split('T')[0])
       }
     }
     fetchAll()
   }
 
   async function handleLogin() {
+    if (Date.now() < lockedUntil) {
+      setPinError('Too many attempts. Please wait.')
+      setPin('')
+      return
+    }
     if (pin === OWNER_PIN) { window.location.href = '/admin'; return }
-    const { data } = await supabase.from('owner_settings').select('receptionist_pin').eq('id', 1).maybeSingle()
-    const expected = data?.receptionist_pin || '1234'
-    if (pin === expected) {
-      sessionStorage.setItem('cafeq_worker', 'true')
+    const { data } = await supabase.from('owner_settings').select('password_hash').limit(1).single()
+    const hash = data?.password_hash || ''
+    const isMatch = hash ? await bcrypt.compare(pin, hash) : pin === '1234'
+    if (isMatch) {
+      localStorage.setItem('cafeq_worker', 'true')
+      localStorage.setItem('cafeq_worker_time', Date.now().toString())
       setLoggedIn(true); setPinError('')
     } else {
-      setPinError('Wrong PIN. Try again.'); setPin('')
+      setPinAttempts(prev => {
+        const next = prev + 1
+        if (next >= 5) {
+          setLockedUntil(Date.now() + 30000)
+          setPinError('Too many attempts. Locked for 30 seconds.')
+          setTimeout(() => { setPinError(''); setPinAttempts(0); setLockedUntil(0) }, 30000)
+        } else {
+          setPinError(`Wrong PIN. ${5 - next} attempts left.`)
+        }
+        return next
+      }); setPin('')
     }
   }
 
@@ -253,7 +290,7 @@ export default function WorkerPage() {
       <style>{`.pb{width:68px;height:68px;border-radius:50%;border:1.5px solid #2a2a2a;background:#1a1a1a;color:white;font-size:1.4rem;font-weight:700;cursor:pointer;transition:all .15s} .pb:active{background:#f97316;transform:scale(.92)}`}</style>
       <div style={{ textAlign: 'center', width: '100%', maxWidth: 300 }}>
         <div style={{ fontSize: '2.5rem', marginBottom: 8 }}>☕</div>
-        <h1 style={{ color: 'white', fontWeight: 900, fontSize: '1.6rem', marginBottom: 4 }}>CaféQ</h1>
+        <h1 style={{ color: 'white', fontWeight: 900, fontSize: '1.6rem', marginBottom: 4 }}>{APP_NAME}</h1>
         <p style={{ color: '#6b7280', fontSize: '0.82rem', marginBottom: 32 }}>Staff Portal · Enter PIN</p>
         <div style={{ display: 'flex', justifyContent: 'center', gap: 12, marginBottom: 32 }}>
           {[0,1,2,3].map(i => (
@@ -268,7 +305,7 @@ export default function WorkerPage() {
           <button className="pb" onClick={() => pin.length < 4 && setPin(p => p + '0')}>0</button>
           <button className="pb" onClick={() => setPin(p => p.slice(0,-1))} style={{ fontSize: '1rem' }}>⌫</button>
         </div>
-        {pin.length === 4 && (
+        {pin.length === 4 && Date.now() >= lockedUntil && (
           <button onClick={handleLogin} style={{ width: '100%', background: '#f97316', color: 'white', fontWeight: 700, fontSize: '1rem', padding: '13px', borderRadius: 14, border: 'none', cursor: 'pointer' }}>
             Enter →
           </button>
@@ -329,7 +366,7 @@ export default function WorkerPage() {
       <div style={{ background: '#111', borderBottom: '1px solid #1a1a1a', padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexShrink: 0 }}>
           <span style={{ fontSize: '1.2rem' }}>☕</span>
-          <span style={{ fontWeight: 900, color: '#f97316', fontSize: '.95rem' }}>CaféQ</span>
+          <span style={{ fontWeight: 900, color: '#f97316', fontSize: '.95rem' }}>{APP_NAME}</span>
         </div>
         <button className="scroll-btn" onClick={() => scrollSlots('left')}><ChevronLeft size={14} /></button>
         <div ref={slotBarRef} style={{ flex: 1, display: 'flex', gap: 5, overflowX: 'auto', scrollbarWidth: 'none', padding: '2px 0' }}>
@@ -371,7 +408,7 @@ export default function WorkerPage() {
           </button>
           {showProfile && (
             <div style={{ position: 'absolute', top: 44, right: 0, background: '#1a1a1a', border: '1px solid #2a2a2a', borderRadius: 12, minWidth: 140, zIndex: 100, animation: 'slideDown .2s ease' }}>
-              <button onClick={() => { sessionStorage.removeItem('cafeq_worker'); setLoggedIn(false) }}
+              <button onClick={() => { localStorage.removeItem('cafeq_worker'); localStorage.removeItem('cafeq_worker_time'); setLoggedIn(false) }}
                 style={{ width: '100%', padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 8, color: '#ef4444', fontWeight: 600, fontSize: '.9rem', background: 'none', border: 'none', cursor: 'pointer' }}>
                 <LogOut size={14} /> Logout
               </button>
