@@ -6,7 +6,7 @@ export default function PrivacyPolicy() {
         <div style={{ maxWidth: 640, margin: '0 auto', background: 'white', borderRadius: 20, padding: '32px 24px', border: '1px solid #f0ede8' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 24 }}>
             <span style={{ fontSize: '1.8rem' }}>☕</span>
-            <h1 style={{ fontSize: '1.5rem', fontWeight: 900, color: '#f97316' }}>SnappyyOrder Privacy Policy</h1>
+            <h1 style={{ fontSize: '1.5rem', fontWeight: 900, color: '#f97316' }}>SnappyOrder Privacy Policy</h1>
           </div>
           <p style={{ color: '#6b7280', fontSize: '0.82rem', marginBottom: 24 }}>Last updated: April 2026</p>
   

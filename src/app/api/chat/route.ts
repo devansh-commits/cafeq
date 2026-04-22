@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 
-const APP_NAME = process.env.NEXT_PUBLIC_APP_NAME || 'SnappyyOrder'
+const APP_NAME = process.env.NEXT_PUBLIC_APP_NAME || 'SnappyOrder'
 
 // ── Sanitize text injected into AI prompt ──
 function sanitize(str: string): string {
