@@ -378,7 +378,7 @@ export default function Home() {
   if (loading) return (
     <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f97316' }}>
       <div style={{ textAlign: 'center' }}>
-        <div style={{ fontSize: '3rem', marginBottom: '12px' }}>☕</div>
+        <img src="/logo.png" alt="logo" style={{ width: '72px', height: '72px', objectFit: 'contain', marginBottom: '12px' }} />
         <p style={{ color: 'white', fontWeight: 800, fontSize: '1.5rem' }}>{APP_NAME}</p>
       </div>
     </div>
@@ -406,7 +406,7 @@ export default function Home() {
       <div className="sticky top-0 z-40" style={{ background: '#f97316', boxShadow: '0 2px 12px rgba(249,115,22,0.3)' }}>
         <div className="max-w-2xl mx-auto px-4 py-3 flex justify-between items-center">
           <div className="flex items-center gap-3">
-            <span style={{ fontSize: '1.8rem' }}>☕</span>
+            <img src="/logo.png" alt="logo" style={{ width: '36px', height: '36px', objectFit: 'contain' }} />
             <div>
               <h1 style={{ fontSize: '1.9rem', fontWeight: 800, color: 'white', letterSpacing: '-0.02em', lineHeight: 1 }}>{APP_NAME}</h1>
               <p style={{ color: 'rgba(255,255,255,0.8)', fontSize: '0.7rem', fontWeight: 500 }}>{APP_TAGLINE} · Hey {userName.split(' ')[0]}! 👋</p>

@@ -76,7 +76,7 @@ export default function StaffEntry() {
     <div style={{ minHeight: '100vh', background: '#0f0f0f', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
       <style>{`.pb{width:72px;height:72px;border-radius:50%;background:#1a1a1a;color:white;font-size:1.4rem;font-weight:700;cursor:pointer;border:1.5px solid #2a2a2a;transition:all .15s} .pb:active{background:#f97316;transform:scale(.92)}`}</style>
       <div style={{ textAlign: 'center', width: '100%', maxWidth: 300 }}>
-        <div style={{ fontSize: '2.8rem', marginBottom: 8 }}>☕</div>
+        <img src="/logo.png" alt="logo" style={{ width: '64px', height: '64px', objectFit: 'contain', marginBottom: '8px' }} />
         <h1 style={{ color: 'white', fontWeight: 900, fontSize: '1.6rem', marginBottom: 4 }}>{APP_NAME}</h1>
         <p style={{ color: '#6b7280', fontSize: '0.82rem', marginBottom: 36 }}>{APP_TAGLINE} · Staff Portal</p>
 

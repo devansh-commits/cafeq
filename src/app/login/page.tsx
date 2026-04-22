@@ -87,6 +87,7 @@ export default function LoginPage() {
     <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f97316' }}>
       <div style={{ textAlign: 'center' }}>
         <div style={{ fontSize: '3rem', marginBottom: '12px' }}>☕</div>
+        <img src="/logo.png" alt="logo" style={{ width: '60px', height: '60px', objectFit: 'contain', marginBottom: '8px' }} />
         <p style={{ color: 'white', fontWeight: 800, fontSize: '1.5rem' }}>{APP_NAME}</p>
       </div>
     </div>
@@ -103,7 +104,9 @@ export default function LoginPage() {
 
       <div style={{ background: 'white', borderRadius: '28px', padding: '36px 28px', width: '100%', maxWidth: '400px', boxShadow: '0 8px 40px rgba(249,115,22,0.12)' }}>
         <div style={{ textAlign: 'center', marginBottom: '28px' }}>
-          <div style={{ fontSize: '3rem', marginBottom: '8px' }}>☕</div>
+          <div style={{ fontSize: '3rem', marginBottom: '8px' }}>
+            <img src="/logo.png" alt="logo" style={{ width: '72px', height: '72px', objectFit: 'contain' }} />
+          </div>
           <h1 style={{ fontSize: '2rem', fontWeight: 900, color: '#f97316', letterSpacing: '-0.03em', lineHeight: 1 }}>{APP_NAME}</h1>
           <p style={{ color: '#9ca3af', fontSize: '0.85rem', marginTop: '6px' }}>{APP_TAGLINE}</p>
         </div>

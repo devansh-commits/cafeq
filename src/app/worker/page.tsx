@@ -289,7 +289,7 @@ export default function WorkerPage() {
     <div style={{ minHeight: '100vh', background: '#0f0f0f', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
       <style>{`.pb{width:68px;height:68px;border-radius:50%;border:1.5px solid #2a2a2a;background:#1a1a1a;color:white;font-size:1.4rem;font-weight:700;cursor:pointer;transition:all .15s} .pb:active{background:#f97316;transform:scale(.92)}`}</style>
       <div style={{ textAlign: 'center', width: '100%', maxWidth: 300 }}>
-        <div style={{ fontSize: '2.5rem', marginBottom: 8 }}>☕</div>
+        <img src="/logo.png" alt="logo" style={{ width: '64px', height: '64px', objectFit: 'contain', marginBottom: 8 }} />
         <h1 style={{ color: 'white', fontWeight: 900, fontSize: '1.6rem', marginBottom: 4 }}>{APP_NAME}</h1>
         <p style={{ color: '#6b7280', fontSize: '0.82rem', marginBottom: 32 }}>Staff Portal · Enter PIN</p>
         <div style={{ display: 'flex', justifyContent: 'center', gap: 12, marginBottom: 32 }}>
@@ -365,7 +365,7 @@ export default function WorkerPage() {
       {/* TOP BAR */}
       <div style={{ background: '#111', borderBottom: '1px solid #1a1a1a', padding: '10px 12px', display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 7, flexShrink: 0 }}>
-          <span style={{ fontSize: '1.2rem' }}>☕</span>
+          <img src="/logo.png" alt="logo" style={{ width: '24px', height: '24px', objectFit: 'contain' }} />
           <span style={{ fontWeight: 900, color: '#f97316', fontSize: '.95rem' }}>{APP_NAME}</span>
         </div>
         <button className="scroll-btn" onClick={() => scrollSlots('left')}><ChevronLeft size={14} /></button>

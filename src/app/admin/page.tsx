@@ -533,7 +533,7 @@ BUSINESS DATA:
     <div style={{ minHeight: '100vh', background: '#0f0f0f', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
       <style>{`.pb{width:70px;height:70px;border-radius:50%;background:#1a1a1a;color:white;font-size:1.4rem;font-weight:700;cursor:pointer;border:1.5px solid #2a2a2a;transition:all .15s} .pb:active{background:#f97316;transform:scale(.92)}`}</style>
       <div style={{ textAlign: 'center', width: '100%', maxWidth: 300 }}>
-        <div style={{ fontSize: '2.5rem', marginBottom: 8 }}>☕</div>
+        <img src="/logo.png" alt="logo" style={{ width: '64px', height: '64px', objectFit: 'contain', marginBottom: 8 }} />
         <h1 style={{ color: 'white', fontWeight: 900, fontSize: '1.5rem', marginBottom: 4 }}>Owner Panel</h1>
         <p style={{ color: '#6b7280', fontSize: '0.82rem', marginBottom: 28 }}>Enter your PIN</p>
         <div style={{ display: 'flex', justifyContent: 'center', gap: 12, marginBottom: 28 }}>
@@ -579,8 +579,8 @@ BUSINESS DATA:
       {/* SIDEBAR — desktop */}
       <div className="sidebar" style={{ display:'none', position:'fixed', top:0, left:0, width:200, height:'100vh', background:'white', borderRight:'1px solid #f0ede8', flexDirection:'column', padding:'20px 12px', zIndex:40 }}>
         <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:28, padding:'0 4px' }}>
-          <span style={{ fontSize:'1.4rem' }}>☕</span>
-          <div>
+          <img src="/logo.png" alt="logo" style={{ width:'32px', height:'32px', objectFit:'contain' }} />
+            <div>
             <p style={{ fontWeight:900, color:'#f97316', fontSize:'1rem', lineHeight:1 }}>{APP_NAME}</p>
             <p style={{ color:'#9ca3af', fontSize:'0.65rem' }}>Owner Panel</p>
           </div>
@@ -607,7 +607,7 @@ BUSINESS DATA:
       {/* MOBILE HEADER */}
       <div className="mobile-header" style={{ background:'#f97316', padding:'14px 16px', display:'flex', justifyContent:'space-between', alignItems:'center', position:'sticky', top:0, zIndex:30 }}>
         <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-          <span style={{ fontSize:'1.4rem' }}>☕</span>
+          <img src="/logo.png" alt="logo" style={{ width:'32px', height:'32px', objectFit:'contain' }} />
           <div>
             <p style={{ fontWeight:900, color:'white', fontSize:'1rem', lineHeight:1 }}>{APP_NAME}</p>
             <p style={{ color:'rgba(255,255,255,0.8)', fontSize:'0.65rem' }}>Owner Panel</p>
