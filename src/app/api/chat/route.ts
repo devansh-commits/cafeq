@@ -22,7 +22,7 @@ export async function POST(req: NextRequest) {
   const origin = req.headers.get('origin') || ''
   const host = req.headers.get('host') || ''
   const isLocalDev = host.includes('localhost') || host.includes('192.168.')
-  const isVercel = origin.includes('cafeq') || origin.includes('vercel.app')
+  const isVercel = origin.includes('cafeq') || origin.includes('vercel.app') || origin.includes('snappyyorder') || origin.includes('snappyorder')
   if (!isLocalDev && !isVercel && origin !== '') {
     return NextResponse.json({ choices: [{ message: { content: 'Unauthorized' } }], items: [] }, { status: 403 })
   }
