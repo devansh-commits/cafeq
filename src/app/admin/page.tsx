@@ -226,10 +226,10 @@ export default function AdminPage() {
         users(name, phone), order_items(quantity, price_at_order, menu_items(name))`)
       .order('created_at', { ascending: false })
       .limit(200)
-    if (o) {
-      const normalized = normalizeOrders(o as unknown[])
-      const todayStr = new Date().toISOString().split('T')[0]
-      const todayCount = normalized.filter(x => x.created_at?.startsWith(todayStr)).length
+      if (o) {
+        const normalized = normalizeOrders(o as unknown[])
+        const todayStr = new Date(Date.now() + 5.5 * 60 * 60 * 1000).toISOString().split('T')[0]
+        const todayCount = normalized.filter(x => x.created_at?.startsWith(todayStr)).length
       if (prevOrderCount.current > 0 && todayCount > prevOrderCount.current) playAlert()
       prevOrderCount.current = todayCount
       setOrders(normalized)
@@ -246,7 +246,8 @@ export default function AdminPage() {
     for (const d of [todayIST, tomorrowIST]) {
       const { data: existing } = await supabase.from('time_slots').select('id').eq('date', d).limit(1)
       if (!existing || existing.length === 0) {
-        await supabase.rpc('generate_daily_slots', { target_date: d })
+        const { error: rpcError } = await supabase.rpc('generate_daily_slots', { date: d })
+        if (rpcError) console.error(`Slot generation for ${d} failed:`, rpcError)
       }
     }
 
@@ -296,7 +297,7 @@ export default function AdminPage() {
   }
 
   // ── Computed ──
-  const todayStr = new Date().toISOString().split('T')[0]
+  const todayStr = new Date(Date.now() + 5.5 * 60 * 60 * 1000).toISOString().split('T')[0]
   const todayOrders = orders.filter(o => o.created_at?.startsWith(todayStr))
   const todayRevenue = todayOrders.reduce((s, o) => s + o.total_amount, 0)
   const todayConvFee = todayOrders.reduce((s, o) => s + (o.convenience_fee || 0), 0)
