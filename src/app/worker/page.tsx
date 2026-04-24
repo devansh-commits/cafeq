@@ -143,13 +143,14 @@ export default function WorkerPage() {
   }, [])
 
   const fetchAll = useCallback(async () => {
-    const today = new Date().toISOString().split('T')[0]
+    const today = new Date(Date.now() + 5.5 * 60 * 60 * 1000).toISOString().split('T')[0]
     const { data: slotsData } = await supabase
       .from('time_slots').select('slot_time, max_orders, current_orders')
       .eq('date', today).order('slot_time')
-
+ 
     if (!slotsData || slotsData.length === 0) {
-      await supabase.rpc('generate_daily_slots', { target_date: today })
+      const { error: rpcError } = await supabase.rpc('generate_daily_slots', { date: today })
+      if (rpcError) console.error('Slot generation RPC failed:', rpcError)
       const { data: newSlots } = await supabase
         .from('time_slots').select('slot_time, max_orders, current_orders')
         .eq('date', today).order('slot_time')

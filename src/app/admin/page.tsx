@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
 import bcrypt from 'bcryptjs'
 import { APP_NAME, APP_TAGLINE } from '@/lib/config'
+import { LogoHeader } from '@/components/LogoHeader'
 import {
   LayoutDashboard, ShoppingBag, TrendingUp, UtensilsCrossed,
   LogOut, RefreshCw, Search, ToggleLeft, ToggleRight,
@@ -82,7 +83,6 @@ function playAlert() {
   } catch {}
 }
 
-// Detect if AI reply mentions downloadable data
 function detectDownload(reply: string): DownloadAction | undefined {
   const lower = reply.toLowerCase()
   if (lower.includes('today') && (lower.includes('report') || lower.includes('download') || lower.includes('csv') || lower.includes('export'))) {
@@ -131,7 +131,6 @@ export default function AdminPage() {
   const [tokenResetDone, setTokenResetDone] = useState(false)
   const [resettingToken, setResettingToken] = useState(false)
 
-  // ── Mic state ──
   const [micOn, setMicOn] = useState(false)
   const [micSupported, setMicSupported] = useState(false)
   const recognitionRef = useRef<any>(null)
@@ -139,29 +138,25 @@ export default function AdminPage() {
   const prevOrderCount = useRef(0)
   const chatEndRef = useRef<HTMLDivElement>(null)
 
-  // Check mic support
   useEffect(() => {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
     if (SpeechRecognition) setMicSupported(true)
   }, [])
 
-  // Toggle mic
   function toggleMic() {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
     if (!SpeechRecognition) return
 
     if (micOn) {
-      // Turn OFF
       recognitionRef.current?.stop()
       setMicOn(false)
       return
     }
 
-    // Turn ON
     const recognition = new SpeechRecognition()
-    recognition.continuous = true        // keeps listening until manually stopped
-    recognition.interimResults = true    // shows partial results while speaking
-    recognition.lang = ''               // auto-detect language
+    recognition.continuous = true
+    recognition.interimResults = true
+    recognition.lang = ''
 
     recognition.onresult = (event: any) => {
       let transcript = ''
@@ -176,7 +171,6 @@ export default function AdminPage() {
     }
 
     recognition.onend = () => {
-      // If still supposed to be on, restart it
       if (micOn) recognition.start()
     }
 
@@ -185,7 +179,6 @@ export default function AdminPage() {
     setMicOn(true)
   }
 
-  // Stop mic when user sends message
   function stopMic() {
     if (micOn) {
       recognitionRef.current?.stop()
@@ -239,7 +232,6 @@ export default function AdminPage() {
     const { data: settings } = await supabase.from('owner_settings').select('cafe_open').limit(1).single()
     if (settings) setCafeOpen(settings.cafe_open ?? true)
 
-    // ── Auto-generate today + tomorrow slots if missing ──
     const istNow = new Date(Date.now() + 5.5 * 60 * 60 * 1000)
     const todayIST = istNow.toISOString().split('T')[0]
     const tomorrowIST = new Date(istNow.getTime() + 24 * 60 * 60 * 1000).toISOString().split('T')[0]
@@ -296,7 +288,6 @@ export default function AdminPage() {
     }
   }
 
-  // ── Computed ──
   const todayStr = new Date(Date.now() + 5.5 * 60 * 60 * 1000).toISOString().split('T')[0]
   const todayOrders = orders.filter(o => o.created_at?.startsWith(todayStr))
   const todayRevenue = todayOrders.reduce((s, o) => s + o.total_amount, 0)
@@ -425,7 +416,6 @@ export default function AdminPage() {
   function downloadCSV(data: Order[], filename: string) {
     function cell(val: any): string {
       const str = (val === null || val === undefined) ? '' : String(val)
-      // Escape double quotes by doubling them, then wrap in quotes
       return '"' + str.replace(/"/g, '""') + '"'
     }
     const headers = [
@@ -529,7 +519,6 @@ BUSINESS DATA:
     setAiLoading(false)
   }
 
-  // ── PIN SCREEN ──
   if (!authed) return (
     <div style={{ minHeight: '100vh', background: '#0f0f0f', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
       <style>{`.pb{width:70px;height:70px;border-radius:50%;background:#1a1a1a;color:white;font-size:1.4rem;font-weight:700;cursor:pointer;border:1.5px solid #2a2a2a;transition:all .15s} .pb:active{background:#f97316;transform:scale(.92)}`}</style>
@@ -551,7 +540,6 @@ BUSINESS DATA:
     </div>
   )
 
-  // ── MAIN DASHBOARD ──
   return (
     <div style={{ minHeight: '100vh', background: '#f8f7f4', fontFamily: 'system-ui, -apple-system, sans-serif' }}>
       <style>{`
@@ -579,12 +567,12 @@ BUSINESS DATA:
 
       {/* SIDEBAR — desktop */}
       <div className="sidebar" style={{ display:'none', position:'fixed', top:0, left:0, width:200, height:'100vh', background:'white', borderRight:'1px solid #f0ede8', flexDirection:'column', padding:'20px 12px', zIndex:40 }}>
-        <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:28, padding:'0 4px' }}>
-          <img src="/logo.png" alt="logo" style={{ width:'32px', height:'32px', objectFit:'contain' }} />
-            <div>
-            <p style={{ fontWeight:900, color:'#f97316', fontSize:'1rem', lineHeight:1 }}>{APP_NAME}</p>
-            <p style={{ color:'#9ca3af', fontSize:'0.65rem' }}>Owner Panel</p>
-          </div>
+        <div style={{ marginBottom:28 }}>
+          <LogoHeader
+            subtitle="Owner Panel"
+            textColor="#f97316"
+            borderColor="transparent"
+          />
         </div>
         {TABS.map(t => (
           <button key={t.id} className="tab-btn" onClick={() => setTab(t.id)}
@@ -605,27 +593,29 @@ BUSINESS DATA:
         </div>
       </div>
 
-      {/* MOBILE HEADER */}
-      <div className="mobile-header" style={{ background:'#f97316', padding:'14px 16px', display:'flex', justifyContent:'space-between', alignItems:'center', position:'sticky', top:0, zIndex:30 }}>
-        <div style={{ display:'flex', alignItems:'center', gap:8 }}>
-          <img src="/logo.png" alt="logo" style={{ width:'32px', height:'32px', objectFit:'contain' }} />
-          <div>
-            <p style={{ fontWeight:900, color:'white', fontSize:'1rem', lineHeight:1 }}>{APP_NAME}</p>
-            <p style={{ color:'rgba(255,255,255,0.8)', fontSize:'0.65rem' }}>Owner Panel</p>
-          </div>
-        </div>
-        <div style={{ display:'flex', gap:6 }}>
-          <button onClick={fetchData} style={{ background:'rgba(255,255,255,0.2)', border:'none', borderRadius:'50%', width:34, height:34, display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer' }}>
-            <RefreshCw size={15} color="white" />
-          </button>
-          <button onClick={() => { sessionStorage.removeItem('cafeq_owner'); sessionStorage.removeItem('cafeq_owner_time'); setAuthed(false) }}
-            style={{ background:'rgba(255,255,255,0.2)', border:'none', borderRadius:'50%', width:34, height:34, display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer' }}>
-            <LogOut size={15} color="white" />
-          </button>
+      {/* MOBILE HEADER WITH PROFESSIONAL LOGO */}
+      <div className="mobile-header" style={{ background:'#f97316', borderBottom:'none', padding:0, display:'flex' }}>
+        <div style={{ flex:1 }}>
+          <LogoHeader
+            subtitle="Owner Panel"
+            textColor="#ffffff"
+            borderColor="transparent"
+            actions={
+              <div style={{ display:'flex', gap:6 }}>
+                <button onClick={fetchData} style={{ background:'rgba(255,255,255,0.2)', border:'none', borderRadius:'50%', width:34, height:34, display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer' }}>
+                  <RefreshCw size={15} color="white" />
+                </button>
+                <button onClick={() => { sessionStorage.removeItem('cafeq_owner'); sessionStorage.removeItem('cafeq_owner_time'); setAuthed(false) }}
+                  style={{ background:'rgba(255,255,255,0.2)', border:'none', borderRadius:'50%', width:34, height:34, display:'flex', alignItems:'center', justifyContent:'center', cursor:'pointer' }}>
+                  <LogOut size={15} color="white" />
+                </button>
+              </div>
+            }
+          />
         </div>
       </div>
 
-      {/* CONTENT */}
+      {/* CONTENT - ALL REST OF CODE STAYS EXACTLY THE SAME */}
       <div className="main-wrap" style={{ marginLeft:0, paddingTop:0, paddingBottom:80 }}>
         <div style={{ padding:'20px 16px', maxWidth:860, margin:'0 auto' }}>
 
@@ -1001,7 +991,6 @@ BUSINESS DATA:
               <h2 style={{ fontWeight:800, fontSize:'1.4rem', color:'#1a1a1a', marginBottom:4 }}>AI Assistant ✨</h2>
               <p style={{ color:'#9ca3af', fontSize:'0.82rem', marginBottom:16 }}>Koi bhi Indian language mein pucho</p>
 
-              {/* Suggestion chips */}
               <div style={{ display:'flex', gap:6, flexWrap:'wrap', marginBottom:14 }}>
                 {['Aaj kitna revenue hua?','Best selling item?','Compare this week vs last','Dead stock items?','Aaj ka report download karo'].map(q => (
                   <button key={q} onClick={() => setChatInput(q)}
@@ -1011,7 +1000,6 @@ BUSINESS DATA:
                 ))}
               </div>
 
-              {/* Chat window */}
               <div className="card" style={{ padding:0, overflow:'hidden' }}>
                 <div style={{ height:420, overflowY:'auto', padding:'16px', display:'flex', flexDirection:'column', gap:10 }}>
                   {chatMsgs.map((m, i) => (
@@ -1019,7 +1007,6 @@ BUSINESS DATA:
                       <div style={{ maxWidth:'88%', padding:'10px 14px', borderRadius:m.role==='user'?'16px 16px 4px 16px':'16px 16px 16px 4px', background:m.role==='user'?'#f97316':'#f8f7f4', color:m.role==='user'?'white':'#1a1a1a', fontSize:'0.875rem', lineHeight:1.5, whiteSpace:'pre-wrap' }}>
                         {m.content}
                       </div>
-                      {/* ── DOWNLOAD BUTTON in chat ── */}
                       {m.role === 'assistant' && m.download && (
                         <button onClick={() => handleDownload(m.download!)}
                           style={{ display:'flex', alignItems:'center', gap:6, background:'white', border:'1.5px solid #f97316', borderRadius:50, padding:'6px 14px', color:'#f97316', fontWeight:700, fontSize:'0.78rem', cursor:'pointer', boxShadow:'0 2px 8px rgba(249,115,22,0.15)' }}>
@@ -1038,9 +1025,7 @@ BUSINESS DATA:
                   <div ref={chatEndRef} />
                 </div>
 
-                {/* Input bar with mic toggle */}
                 <div style={{ padding:'12px 14px', borderTop:'1px solid #f0ede8', display:'flex', gap:8, alignItems:'center' }}>
-                  {/* Mic status indicator */}
                   {micOn && (
                     <div style={{ display:'flex', alignItems:'center', gap:4, background:'#fef2f2', borderRadius:50, padding:'4px 10px', flexShrink:0 }}>
                       <div style={{ width:6, height:6, borderRadius:'50%', background:'#ef4444', animation:'pulse 1s infinite' }} />
@@ -1052,7 +1037,6 @@ BUSINESS DATA:
                     placeholder={micOn ? 'Speak now...' : 'Type or tap mic to speak...'}
                     className="inp" style={{ flex:1, padding:'10px 14px' }} />
 
-                  {/* Mic toggle button */}
                   {micSupported && (
                     <button onClick={toggleMic}
                       className={micOn ? 'mic-on' : ''}
@@ -1062,7 +1046,6 @@ BUSINESS DATA:
                     </button>
                   )}
 
-                  {/* Send button */}
                   <button onClick={sendToAI} className="btn-primary"
                     style={{ padding:'0 16px', height:44, display:'flex', alignItems:'center', flexShrink:0 }}>
                     <Send size={16} />
@@ -1070,7 +1053,6 @@ BUSINESS DATA:
                 </div>
               </div>
 
-              {/* Mic instructions */}
               {micSupported && (
                 <p style={{ color:'#9ca3af', fontSize:'0.72rem', textAlign:'center', marginTop:10 }}>
                   🎤 Mic button: tap once to start → tap again to stop · Works in any language

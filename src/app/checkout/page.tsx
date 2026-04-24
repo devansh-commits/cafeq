@@ -81,10 +81,11 @@ export default function CheckoutPage() {
   }
 
   async function fetchSlots() {
-    const today = new Date().toISOString().split('T')[0]
+    const today = new Date(Date.now() + 5.5 * 60 * 60 * 1000).toISOString().split('T')[0]
     const { data: existing } = await supabase.from('time_slots').select('id').eq('date', today).limit(1)
     if (!existing || existing.length === 0) {
-      await supabase.rpc('generate_daily_slots', { target_date: today })
+      const { error: rpcError } = await supabase.rpc('generate_daily_slots', { date: today })
+      if (rpcError) console.error('Slot generation RPC failed:', rpcError)
     }
     const { data } = await supabase.from('time_slots').select('*').eq('date', today).order('slot_time')
     if (data) setSlots(data)

@@ -2,6 +2,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { supabase } from '@/lib/supabase'
 import { APP_NAME, APP_TAGLINE } from '@/lib/config'
+import { LogoHeader } from '@/components/LogoHeader'
 import { ShoppingCart, Clock, Zap, X, Send, ChevronDown, ChevronUp, Plus, Minus, Sparkles, LogOut, ClipboardList, ChevronRight, ChevronLeft } from 'lucide-react'
 
 type CustomizationOption = { name: string; choices: string[] }
@@ -209,7 +210,8 @@ export default function Home() {
       const today = new Date(Date.now() + 5.5 * 60 * 60 * 1000).toISOString().split('T')[0]
       const { data: existing } = await supabase.from('time_slots').select('id').eq('date', today).limit(1)
       if (!existing || existing.length === 0) {
-        await supabase.rpc('generate_daily_slots', { target_date: today })
+        const { error: rpcError } = await supabase.rpc('generate_daily_slots', { date: today })
+        if (rpcError) console.error('Slot generation RPC failed:', rpcError)
       }
       const { data } = await supabase.from('time_slots').select('*').eq('date', today).order('slot_time')
       if (data) setSlots(data)
@@ -402,48 +404,48 @@ export default function Home() {
         .order-slide{animation:slideLeft 0.2s ease forwards;}
       `}</style>
 
-      {/* HEADER */}
-      <div className="sticky top-0 z-40" style={{ background: '#f97316', boxShadow: '0 2px 12px rgba(249,115,22,0.3)' }}>
-        <div className="max-w-2xl mx-auto px-4 py-3 flex justify-between items-center">
-          <div className="flex items-center gap-3">
-            <img src="/logo.png" alt="logo" style={{ width: '36px', height: '36px', objectFit: 'contain' }} />
-            <div>
-              <h1 style={{ fontSize: '1.9rem', fontWeight: 800, color: 'white', letterSpacing: '-0.02em', lineHeight: 1 }}>{APP_NAME}</h1>
-              <p style={{ color: 'rgba(255,255,255,0.8)', fontSize: '0.7rem', fontWeight: 500 }}>{APP_TAGLINE} · Hey {userName.split(' ')[0]}! 👋</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <button onClick={() => setShowCart(!showCart)}
-              className="relative flex items-center gap-2 btn-scale"
-              style={{ background: 'white', color: '#f97316', borderRadius: '50px', padding: '8px 16px', fontWeight: 700, fontSize: '0.9rem' }}>
-              <ShoppingCart size={17} />
-              Cart
-              {totalItems > 0 && (
-                <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center font-bold">
-                  {totalItems}
-                </span>
-              )}
-            </button>
-            <div style={{ position: 'relative' }}>
-              <button onClick={() => setShowUserMenu(!showUserMenu)}
-                className="btn-scale w-9 h-9 rounded-full flex items-center justify-center font-bold text-sm"
-                style={{ background: 'rgba(255,255,255,0.2)', color: 'white', border: '1.5px solid rgba(255,255,255,0.4)' }}>
-                {userName.charAt(0).toUpperCase()}
-              </button>
-              {showUserMenu && (
-                <div style={{ position: 'absolute', top: '44px', right: 0, background: 'white', borderRadius: '16px', boxShadow: '0 8px 24px rgba(0,0,0,0.12)', border: '1px solid #f0ede8', minWidth: '160px', zIndex: 100, animation: 'fadeUp 0.2s ease forwards' }}>
-                  <button onClick={() => { window.location.href = '/orders'; setShowUserMenu(false) }}
-                    style={{ width: '100%', padding: '12px 16px', display: 'flex', alignItems: 'center', gap: '10px', color: '#374151', fontWeight: 600, fontSize: '0.9rem', background: 'none', border: 'none', cursor: 'pointer', borderBottom: '1px solid #f0ede8' }}>
-                    <ClipboardList size={16} color="#f97316" /> My Orders
+      {/* NEW PROFESSIONAL HEADER WITH LOGO */}
+      <div style={{ background: '#f97316', boxShadow: '0 2px 12px rgba(249,115,22,0.3)' }}>
+        <div className="max-w-2xl mx-auto px-4">
+          <LogoHeader
+            subtitle={`Skip The Queue · Hey ${userName.split(' ')[0]}! 👋`}
+            textColor="#ffffff"
+            borderColor="transparent"
+            actions={
+              <div className="flex items-center gap-2">
+                <button onClick={() => setShowCart(!showCart)}
+                  className="relative flex items-center gap-2 btn-scale"
+                  style={{ background: 'white', color: '#f97316', borderRadius: '50px', padding: '8px 16px', fontWeight: 700, fontSize: '0.9rem' }}>
+                  <ShoppingCart size={17} />
+                  Cart
+                  {totalItems > 0 && (
+                    <span className="absolute -top-2 -right-2 bg-red-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center font-bold">
+                      {totalItems}
+                    </span>
+                  )}
+                </button>
+                <div style={{ position: 'relative' }}>
+                  <button onClick={() => setShowUserMenu(!showUserMenu)}
+                    className="btn-scale w-9 h-9 rounded-full flex items-center justify-center font-bold text-sm"
+                    style={{ background: 'rgba(255,255,255,0.2)', color: 'white', border: '1.5px solid rgba(255,255,255,0.4)' }}>
+                    {userName.charAt(0).toUpperCase()}
                   </button>
-                  <button onClick={handleLogout}
-                    style={{ width: '100%', padding: '12px 16px', display: 'flex', alignItems: 'center', gap: '10px', color: '#ef4444', fontWeight: 600, fontSize: '0.9rem', background: 'none', border: 'none', cursor: 'pointer' }}>
-                    <LogOut size={16} color="#ef4444" /> Logout
-                  </button>
+                  {showUserMenu && (
+                    <div style={{ position: 'absolute', top: '44px', right: 0, background: 'white', borderRadius: '16px', boxShadow: '0 8px 24px rgba(0,0,0,0.12)', border: '1px solid #f0ede8', minWidth: '160px', zIndex: 100, animation: 'fadeUp 0.2s ease forwards' }}>
+                      <button onClick={() => { window.location.href = '/orders'; setShowUserMenu(false) }}
+                        style={{ width: '100%', padding: '12px 16px', display: 'flex', alignItems: 'center', gap: '10px', color: '#374151', fontWeight: 600, fontSize: '0.9rem', background: 'none', border: 'none', cursor: 'pointer', borderBottom: '1px solid #f0ede8' }}>
+                        <ClipboardList size={16} color="#f97316" /> My Orders
+                      </button>
+                      <button onClick={handleLogout}
+                        style={{ width: '100%', padding: '12px 16px', display: 'flex', alignItems: 'center', gap: '10px', color: '#ef4444', fontWeight: 600, fontSize: '0.9rem', background: 'none', border: 'none', cursor: 'pointer' }}>
+                        <LogOut size={16} color="#ef4444" /> Logout
+                      </button>
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-          </div>
+              </div>
+            }
+          />
         </div>
       </div>
 
